@@ -59,6 +59,8 @@ def _get_pair_constraints(pair: str) -> Dict[str, Decimal]:
     amount_precision = int(meta.get("AmountPrecision", 0))
     price_precision = int(meta.get("PricePrecision", 0))
     min_order = Decimal(str(meta.get("MiniOrder", "0") or "0"))
+    if min_order <= 0:
+        min_order = Decimal("1")  # Exchange enforces $1 USD minimum notional
 
     qty_step = Decimal("1") / (Decimal("10") ** amount_precision) if amount_precision >= 0 else Decimal("0.00000001")
     price_step = Decimal("1") / (Decimal("10") ** price_precision) if price_precision >= 0 else Decimal("0.00000001")
@@ -84,15 +86,16 @@ def _quantize_order(pair: str, notional: Decimal, raw_price: Decimal) -> Dict[st
         raise RuntimeError(f"Invalid price for {pair}: {raw_price}")
 
     qty = (notional / price).quantize(qty_step, rounding=ROUND_DOWN)
-
-    if qty <= 0 and min_notional > 0:
-        qty = (min_notional / price).quantize(qty_step, rounding=ROUND_DOWN)
+    if qty <= 0:
+        qty = (notional / price).quantize(qty_step, rounding=ROUND_UP)
+    if qty <= 0:
+        qty = qty_step
 
     adjusted_notional = (qty * price).quantize(price_step, rounding=ROUND_DOWN)
 
     if min_notional > 0 and adjusted_notional < min_notional:
-        qty = (min_notional / price).quantize(qty_step, rounding=ROUND_DOWN)
-        adjusted_notional = (qty * price).quantize(price_step, rounding=ROUND_DOWN)
+        qty = (min_notional / price).quantize(qty_step, rounding=ROUND_UP)
+        adjusted_notional = (qty * price).quantize(price_step, rounding=ROUND_UP)
 
     if qty <= 0:
         raise RuntimeError(
