@@ -61,6 +61,7 @@ class Config:
         self._config['update_interval'] = int(os.getenv('UPDATE_INTERVAL', '60'))
         self._config['use_fallback'] = os.getenv('USE_FALLBACK', 'true').lower() == 'true'
         self._config['cache_max_size'] = int(os.getenv('CACHE_MAX_SIZE', '10'))
+        self._config['fetch_intraday_market_data'] = os.getenv('FETCH_INTRADAY_MARKET_DATA', 'true').lower() == 'true'
         
         # Logging
         self._config['log_level'] = os.getenv('LOG_LEVEL', 'INFO')
@@ -99,6 +100,7 @@ class Config:
                 'update_interval': self._config.get('update_interval', 60),
                 'use_fallback': self._config.get('use_fallback', True),
                 'cache_max_size': self._config.get('cache_max_size', 10),
+                'fetch_intraday_market_data': self._config.get('fetch_intraday_market_data', True),
                 'log_level': self._config.get('log_level', 'INFO'),
             }
             
@@ -181,6 +183,11 @@ class Config:
     def log_level(self) -> str:
         """Get log level."""
         return self._config.get('log_level', 'INFO')
+
+    @property
+    def fetch_intraday_market_data(self) -> bool:
+        """Get flag for fetching intraday market data from Roostoo/Binance."""
+        return self._config.get('fetch_intraday_market_data', True)
 
 
 # Global config instance

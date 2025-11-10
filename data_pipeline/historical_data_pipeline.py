@@ -30,7 +30,8 @@ DEFAULT_PAIRS = [
     'DOGE/USD', 'ADA/USD', 'MATIC/USD', 'LTC/USD'
 ]
 
-HORUS_CHAINS = ['bitcoin', 'ethereum', 'solana', 'tron', 'bsc', 'base']
+HORUS_TRANSACTION_CHAINS = ['bitcoin']
+HORUS_TVL_CHAINS = ['bitcoin', 'ethereum', 'solana', 'tron', 'bsc', 'base']
 MINING_CHAINS = ['bitcoin']
 TOP_MARKET_CAP_LIMIT = 20
 CMC_INTERVAL_MAP = {
@@ -232,10 +233,13 @@ def main() -> None:
 
         # Market data
         engine = DataEngine()
-        print("\nFetching market data...")
-        engine.update_market_data(DEFAULT_PAIRS, interval='1m', limit=1000, incremental=False)
-        stats = engine.get_database_stats()
-        print(f"[OK] Market data update complete. Total OHLCV rows: {stats.get('total_rows', 'N/A')}")
+        if config.fetch_intraday_market_data:
+            print("\nFetching market data...")
+            engine.update_market_data(DEFAULT_PAIRS, interval='1m', limit=1000, incremental=False)
+            stats = engine.get_database_stats()
+            print(f"[OK] Market data update complete. Total OHLCV rows: {stats.get('total_rows', 'N/A')}")
+        else:
+            print("\nSkipping intraday market data fetch (fetch_intraday_market_data=false).")
 
         print("\nFetching CoinMarketCap OHLCV series...")
         cmc_pairs = get_available_pairs()
@@ -244,9 +248,9 @@ def main() -> None:
 
         # Horus metrics
         print("\nFetching Horus metrics...")
-        fetch_and_store_transaction_count(conn, HORUS_CHAINS)
+        fetch_and_store_transaction_count(conn, HORUS_TRANSACTION_CHAINS)
         fetch_and_store_mining_work(conn, MINING_CHAINS)
-        fetch_and_store_chain_tvl(conn, HORUS_CHAINS)
+        fetch_and_store_chain_tvl(conn, HORUS_TVL_CHAINS)
         fetch_and_store_whale_net_flow(conn, ['bitcoin'])
 
         # CoinMarketCap sentiment
