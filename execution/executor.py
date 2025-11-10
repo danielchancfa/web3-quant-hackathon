@@ -6,10 +6,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_DOWN
+from functools import lru_cache
 from typing import Dict, Any
 
 from config import get_config
-from data_pipeline.roostoo_api import place_order, get_balance, get_ticker
+from data_pipeline.roostoo_api import (
+    place_order,
+    get_balance,
+    get_ticker,
+    get_exchange_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +45,64 @@ def get_last_price(pair: str) -> float:
     raise RuntimeError(f"Could not fetch last price for {pair}: raw={ticker}")
 
 
+@lru_cache(maxsize=64)
+def _get_pair_constraints(pair: str) -> Dict[str, Decimal]:
+    """
+    Fetch and cache precision / minimum order constraints for a pair.
+    """
+    info = get_exchange_info() or {}
+    trade_pairs = info.get("TradePairs") or {}
+    meta = trade_pairs.get(pair)
+    if not meta:
+        raise RuntimeError(f"Pair {pair} not found in exchange info: {info.keys()}")
+
+    amount_precision = int(meta.get("AmountPrecision", 0))
+    price_precision = int(meta.get("PricePrecision", 0))
+    min_order = Decimal(str(meta.get("MiniOrder", "0") or "0"))
+
+    qty_step = Decimal("1") / (Decimal("10") ** amount_precision) if amount_precision >= 0 else Decimal("0.00000001")
+    price_step = Decimal("1") / (Decimal("10") ** price_precision) if price_precision >= 0 else Decimal("0.00000001")
+
+    return {
+        "qty_step": qty_step,
+        "price_step": price_step,
+        "min_notional": min_order,
+    }
+
+
+def _quantize_order(pair: str, notional: Decimal, raw_price: Decimal) -> Dict[str, Decimal]:
+    """
+    Adjust quantity and notional to satisfy exchange precision and minimums.
+    """
+    constraints = _get_pair_constraints(pair)
+    qty_step = constraints["qty_step"]
+    price_step = constraints["price_step"]
+    min_notional = constraints["min_notional"]
+
+    price = raw_price.quantize(price_step, rounding=ROUND_DOWN)
+    if price <= 0:
+        raise RuntimeError(f"Invalid price for {pair}: {raw_price}")
+
+    qty = (notional / price).quantize(qty_step, rounding=ROUND_DOWN)
+
+    if qty <= 0 and min_notional > 0:
+        qty = (min_notional / price).quantize(qty_step, rounding=ROUND_DOWN)
+
+    adjusted_notional = (qty * price).quantize(price_step, rounding=ROUND_DOWN)
+
+    if min_notional > 0 and adjusted_notional < min_notional:
+        qty = (min_notional / price).quantize(qty_step, rounding=ROUND_DOWN)
+        adjusted_notional = (qty * price).quantize(price_step, rounding=ROUND_DOWN)
+
+    if qty <= 0:
+        raise RuntimeError(
+            f"Unable to quantize {pair} order with notional {notional} and price {price}; "
+            f"min_notional={min_notional}, qty_step={qty_step}"
+        )
+
+    return {"price": price, "quantity": qty, "notional": adjusted_notional}
+
+
 def place_market_order(pair: str, side: str, quantity: float) -> Dict[str, Any]:
     return place_order(pair, side.upper(), quantity, price=None, order_type="MARKET")
 
@@ -55,11 +120,19 @@ def execute_trade(
     if action == "hold" or notional <= 0:
         return {"status": "hold", "pair": pair, "notional": 0.0}
 
-    price = get_last_price(pair)
-    quantity = notional / price
+    raw_price = Decimal(str(get_last_price(pair)))
+    target_notional = Decimal(str(notional))
+    quantized = _quantize_order(pair, target_notional, raw_price)
+
+    quantity = float(quantized["quantity"])
+    price = float(quantized["price"])
+    actual_notional = float(quantized["notional"])
     side = "BUY" if action == "buy" else "SELL"
 
-    logger.info(f"[{pair}] Executing {side} qty={quantity:.6f} (~${notional:.2f}) at price {price:.2f}")
+    logger.info(
+        f"[{pair}] Executing {side} qty={quantity:.6f} (~${actual_notional:.2f}) at price {price:.6f} "
+        f"(requested notional ${notional:.2f})"
+    )
     result = place_market_order(pair, side, quantity)
     logger.info(f"[{pair}] Order result: {result}")
 
@@ -67,7 +140,7 @@ def execute_trade(
         "status": "submitted" if result else "error",
         "pair": pair,
         "side": side,
-        "notional": notional,
+        "notional": actual_notional,
         "price": price,
         "quantity": quantity,
         "api_response": result,
