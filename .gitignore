@@ -65,5 +65,3 @@ htmlcov/
 *.tmp
 *.bak
 *.swp
-
-model_checkpoints/

@@ -200,8 +200,8 @@ class Config:
         if not raw:
             return [
                 'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XRP/USD',
-                'DOGE/USD', 'ADA/USD', 'MATIC/USD', 'LTC/USD', 'ZEC/USD',
-                'SUI/USD', 'HBAR/USD', 'TRX/USD', 'LINK/USD'
+                'DOGE/USD', 'ADA/USD', 'LTC/USD', 'ZEC/USD', 'SUI/USD',
+                'TRX/USD', 'LINK/USD', 'XLM/USD'
             ]
         if isinstance(raw, list):
             return [p for p in raw if isinstance(p, str) and p.strip()]
