@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run model inference and store results.")
     parser.add_argument("--checkpoint_dir", required=True, help="Directory with per-pair checkpoints.")
-    parser.add_argument("--pairs", required=True, help="Comma-separated list of pairs, e.g. 'BTC/USD,ETH/USD'")
+    parser.add_argument("--pairs", required=False, help="Comma-separated list of pairs, e.g. 'BTC/USD,ETH/USD'")
     parser.add_argument("--seq_daily", type=int, default=60)
     parser.add_argument("--seq_hourly", type=int, default=36)
     parser.add_argument("--seq_execution", type=int, default=36)
@@ -42,7 +42,12 @@ def main() -> None:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pairs = [p.strip() for p in args.pairs.split(",") if p.strip()]
+    if args.pairs:
+        pairs = [p.strip() for p in args.pairs.split(",") if p.strip()]
+    else:
+        pairs = config.default_pairs
+        if not pairs:
+            raise ValueError("No trading pairs provided. Specify --pairs or set default_pairs in config.")
 
     logger.info("Running inference for pairs: %s", ", ".join(pairs))
     service = InferenceService(

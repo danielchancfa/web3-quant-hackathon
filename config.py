@@ -62,6 +62,9 @@ class Config:
         self._config['use_fallback'] = os.getenv('USE_FALLBACK', 'true').lower() == 'true'
         self._config['cache_max_size'] = int(os.getenv('CACHE_MAX_SIZE', '10'))
         self._config['fetch_intraday_market_data'] = os.getenv('FETCH_INTRADAY_MARKET_DATA', 'true').lower() == 'true'
+        default_pairs = os.getenv('DEFAULT_PAIRS')
+        if default_pairs:
+            self._config['default_pairs'] = default_pairs
         
         # Logging
         self._config['log_level'] = os.getenv('LOG_LEVEL', 'INFO')
@@ -101,6 +104,7 @@ class Config:
                 'use_fallback': self._config.get('use_fallback', True),
                 'cache_max_size': self._config.get('cache_max_size', 10),
                 'fetch_intraday_market_data': self._config.get('fetch_intraday_market_data', True),
+                'default_pairs': self._config.get('default_pairs'),
                 'log_level': self._config.get('log_level', 'INFO'),
             }
             
@@ -188,6 +192,20 @@ class Config:
     def fetch_intraday_market_data(self) -> bool:
         """Get flag for fetching intraday market data from Roostoo/Binance."""
         return self._config.get('fetch_intraday_market_data', True)
+
+    @property
+    def default_pairs(self) -> list[str]:
+        """Get default trading pairs for inference/execution."""
+        raw = self._config.get('default_pairs')
+        if not raw:
+            return [
+                'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XRP/USD',
+                'DOGE/USD', 'ADA/USD', 'MATIC/USD', 'LTC/USD', 'ZEC/USD',
+                'SUI/USD', 'HBAR/USD', 'TRX/USD', 'LINK/USD'
+            ]
+        if isinstance(raw, list):
+            return [p for p in raw if isinstance(p, str) and p.strip()]
+        return [p.strip() for p in str(raw).split(',') if p.strip()]
 
 
 # Global config instance
