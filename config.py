@@ -62,6 +62,7 @@ class Config:
         self._config['use_fallback'] = os.getenv('USE_FALLBACK', 'true').lower() == 'true'
         self._config['cache_max_size'] = int(os.getenv('CACHE_MAX_SIZE', '10'))
         self._config['fetch_intraday_market_data'] = os.getenv('FETCH_INTRADAY_MARKET_DATA', 'true').lower() == 'true'
+        self._config['use_roostoo_intraday'] = os.getenv('USE_ROOSTOO_INTRADAY', 'true').lower() == 'true'
         default_pairs = os.getenv('DEFAULT_PAIRS')
         if default_pairs:
             self._config['default_pairs'] = default_pairs
@@ -104,6 +105,7 @@ class Config:
                 'use_fallback': self._config.get('use_fallback', True),
                 'cache_max_size': self._config.get('cache_max_size', 10),
                 'fetch_intraday_market_data': self._config.get('fetch_intraday_market_data', True),
+                'use_roostoo_intraday': self._config.get('use_roostoo_intraday', True),
                 'default_pairs': self._config.get('default_pairs'),
                 'log_level': self._config.get('log_level', 'INFO'),
             }
@@ -192,6 +194,11 @@ class Config:
     def fetch_intraday_market_data(self) -> bool:
         """Get flag for fetching intraday market data from Roostoo/Binance."""
         return self._config.get('fetch_intraday_market_data', True)
+
+    @property
+    def use_roostoo_intraday(self) -> bool:
+        """Whether to pull intraday bars directly from Roostoo rather than CoinMarketCap."""
+        return self._config.get('use_roostoo_intraday', True)
 
     @property
     def default_pairs(self) -> list[str]:

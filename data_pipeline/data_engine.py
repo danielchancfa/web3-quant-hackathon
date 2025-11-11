@@ -268,7 +268,22 @@ class DataEngine:
             Returns None if all sources fail
         """
         try:
-            # Use multi-source fetcher with automatic fallback
+            config = get_config()
+            if interval.endswith('h') and config.use_roostoo_intraday:
+                minute_limit = self._compute_minute_window(limit, interval)
+                minute_df = self.data_fetcher.fetch_klines(
+                    pair=pair,
+                    interval='1m',
+                    limit=minute_limit,
+                    start_time=start_time,
+                    end_time=end_time,
+                    use_roostoo=True,
+                    use_fallback=False,
+                )
+                if minute_df is not None and not minute_df.empty:
+                    logger.info(f"Fetched {len(minute_df)} minute bars for {pair}; aggregating to {interval}")
+                    return self._resample_minutes(minute_df, interval)
+
             df = self.data_fetcher.fetch_klines(
                 pair=pair,
                 interval=interval,
@@ -276,19 +291,54 @@ class DataEngine:
                 start_time=start_time,
                 end_time=end_time,
                 use_roostoo=True,
-                use_fallback=self.use_fallback
+                use_fallback=self.use_fallback if not interval.endswith('h') or not config.use_roostoo_intraday else False,
             )
-            
             if df is not None and not df.empty:
                 logger.info(f"Successfully fetched {len(df)} klines for {pair} ({interval})")
                 return df
-            else:
-                logger.warning(f"Failed to fetch klines for {pair} from all sources")
-                return None
-            
+            logger.warning(f"Failed to fetch klines for {pair} from available sources")
+            return None
         except Exception as e:
             logger.error(f"Error fetching klines for {pair}: {e}")
             return None
+
+    @staticmethod
+    def _compute_minute_window(limit: int, interval: str) -> int:
+        """Determine how many 1m bars are required to build the requested interval."""
+        try:
+            hours = max(int(interval.rstrip('hH')), 1)
+        except ValueError:
+            hours = 1
+        target = (limit or 1) * hours * 60
+        return min(max(target, hours * 60), 1000)
+
+    @staticmethod
+    def _resample_minutes(minute_df: pd.DataFrame, interval: str) -> pd.DataFrame:
+        """Aggregate 1-minute bars into the requested intraday interval."""
+        if minute_df is None or minute_df.empty:
+            return minute_df
+
+        df = minute_df.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if 'datetime' in df.columns:
+                df.index = pd.to_datetime(df['datetime'])
+            elif 'timestamp' in df.columns:
+                df.index = pd.to_datetime(df['timestamp'], unit='ms')
+            else:
+                raise ValueError("Minute dataframe lacks datetime index/column for resampling.")
+
+        df.index = df.index.tz_localize(None)
+        df = df.sort_index()
+        df = df[['open', 'high', 'low', 'close', 'volume']]
+        freq = interval.upper()
+        agg = df.resample(freq).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum',
+        }).dropna()
+        return agg
     
     def save_ohlcv_to_db(self, pair: str, df: pd.DataFrame, interval: str = '1m'):
         """

@@ -241,10 +241,13 @@ def main() -> None:
         else:
             print("\nSkipping intraday market data fetch (fetch_intraday_market_data=false).")
 
-        print("\nFetching CoinMarketCap OHLCV series...")
-        cmc_pairs = get_available_pairs()
-        fetch_and_store_cmc_ohlcv(engine, cmc_pairs, interval='1d', count=700)
-        fetch_and_store_cmc_ohlcv(engine, cmc_pairs, interval='1h', count=720)
+        if config.use_roostoo_intraday:
+            print("\nSkipping CoinMarketCap OHLCV fetch (using Roostoo intraday data).")
+        else:
+            print("\nFetching CoinMarketCap OHLCV series...")
+            cmc_pairs = get_available_pairs()
+            fetch_and_store_cmc_ohlcv(engine, cmc_pairs, interval='1d', count=700)
+            fetch_and_store_cmc_ohlcv(engine, cmc_pairs, interval='1h', count=720)
 
         # Horus metrics
         print("\nFetching Horus metrics...")
