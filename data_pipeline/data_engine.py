@@ -220,6 +220,22 @@ class DataEngine:
                 CREATE INDEX IF NOT EXISTS idx_exchange_flows_lookup 
                 ON exchange_flows(exchange, network, token_symbol, timestamp)
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS horus_market_price (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    asset TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    datetime TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(asset, interval, timestamp)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_horus_market_price_lookup
+                ON horus_market_price(asset, interval, timestamp)
+            ''')
             
             logger.info("Database initialized successfully")
     

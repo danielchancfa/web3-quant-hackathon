@@ -17,6 +17,7 @@ from .horus_api import (
     get_mining_work,
     get_chain_tvl,
     get_whale_net_flow,
+    get_market_price,
 )
 from .coinmarketcap_api import (
     get_fear_and_greed_historical,
@@ -34,6 +35,17 @@ HORUS_TRANSACTION_CHAINS = ['bitcoin']
 HORUS_TVL_CHAINS = ['bitcoin', 'ethereum', 'solana', 'tron', 'bsc', 'base']
 MINING_CHAINS = ['bitcoin']
 TOP_MARKET_CAP_LIMIT = 20
+
+HORUS_SUPPORTED_ASSETS = {
+    "BTC", "ETH", "XRP", "BNB", "SOL", "DOGE", "TRX", "ADA", "XLM", "WBTC",
+    "SUI", "HBAR", "LINK", "BCH", "WBETH", "UNI", "AVAX", "SHIB", "TON",
+    "LTC", "DOT", "PEPE", "AAVE", "ONDO", "TAO", "WLD", "APT", "NEAR",
+    "ARB", "ICP", "ETC", "FIL", "TRUMP", "OP", "ALGO", "POL", "BONK",
+    "ENA", "ENS", "VET", "SEI", "RENDER", "FET", "ATOM", "VIRTUAL",
+    "SKY", "BNSOL", "RAY", "TIA", "JTO", "JUP", "QNT", "FORM", "INJ", "STX"
+}
+HORUS_ASSETS = sorted({p.split('/')[0].upper() for p in DEFAULT_PAIRS} & HORUS_SUPPORTED_ASSETS)
+HORUS_MARKET_INTERVALS = ['1h', '1d']
 CMC_INTERVAL_MAP = {
     '1d': '1d',
     '1h': '1h',
@@ -99,6 +111,33 @@ def fetch_and_store_whale_net_flow(conn: sqlite3.Connection, chains: List[str]) 
         _store_dataframe(conn, df, 'horus_whale_net_flow')
     else:
         print("[WARN] No whale net flow data fetched.")
+
+
+def fetch_and_store_market_prices(
+    conn: sqlite3.Connection,
+    assets: List[str],
+    intervals: List[str]
+) -> None:
+    frames: List[pd.DataFrame] = []
+    for asset in assets:
+        for interval in intervals:
+            df = get_market_price(asset=asset, interval=interval, as_dataframe=True)
+            if df is None or df.empty:
+                print(f"[WARN] No Horus market price data for {asset} ({interval})")
+                continue
+            df = df.copy()
+            df['asset'] = asset.upper()
+            df['interval'] = interval
+            df['timestamp'] = df['timestamp'].astype(int)
+            frames.append(df)
+
+    if not frames:
+        print("[WARN] No Horus market price data fetched.")
+        return
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined[['asset', 'interval', 'timestamp', 'datetime', 'price']]
+    _store_dataframe(conn, combined, 'horus_market_price')
 
 
 def get_available_pairs() -> List[str]:
@@ -235,7 +274,7 @@ def main() -> None:
         engine = DataEngine()
         if config.fetch_intraday_market_data:
             print("\nFetching market data...")
-            engine.update_market_data(DEFAULT_PAIRS, interval='1m', limit=1000, incremental=False)
+            engine.update_market_data(DEFAULT_PAIRS, interval='1m', limit=300, incremental=False)
             stats = engine.get_database_stats()
             print(f"[OK] Market data update complete. Total OHLCV rows: {stats.get('total_rows', 'N/A')}")
         else:
@@ -255,6 +294,11 @@ def main() -> None:
         fetch_and_store_mining_work(conn, MINING_CHAINS)
         fetch_and_store_chain_tvl(conn, HORUS_TVL_CHAINS)
         fetch_and_store_whale_net_flow(conn, ['bitcoin'])
+        if HORUS_ASSETS:
+            print("\nFetching Horus market prices (1h & 1d)...")
+            fetch_and_store_market_prices(conn, HORUS_ASSETS, HORUS_MARKET_INTERVALS)
+        else:
+            print("\nSkipping Horus market prices (no supported assets).")
 
         # CoinMarketCap sentiment
         print("\nFetching CoinMarketCap Fear & Greed index...")
