@@ -372,6 +372,70 @@ def get_whale_net_flow(
         return raw_results[chain_list[0]] if single_chain else raw_results
 
 
+def get_market_price(
+    asset: str,
+    interval: str = "1d",
+    start: Optional[int] = None,
+    end: Optional[int] = None,
+    as_dataframe: bool = False,
+) -> Optional[Union[List[Dict[str, Any]], pd.DataFrame]]:
+    """
+    Fetch historical market price for an asset.
+
+    Endpoint: https://api-horus.com/market/price
+    Supported intervals: '1d', '1h', '15m'
+    """
+    url = f"{HORUS_BASE_URL}/market/price"
+    headers = _get_headers()
+    params: Dict[str, Any] = {
+        "asset": asset.upper(),
+        "interval": interval,
+    }
+    if 'X-API-Key' in headers:
+        params['X-API-Key'] = headers['X-API-Key']
+    if start is not None:
+        params["start"] = int(start)
+    if end is not None:
+        params["end"] = int(end)
+
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=30)
+        res.raise_for_status()
+        data = res.json()
+
+        if as_dataframe:
+            df = pd.DataFrame(data)
+            if df.empty:
+                return pd.DataFrame()
+            df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
+            df['price'] = pd.to_numeric(df['price'], errors='coerce')
+            df = df.dropna(subset=['timestamp', 'price'])
+            if df.empty:
+                return pd.DataFrame()
+            df['timestamp'] = df['timestamp'].astype(int)
+            df['price'] = df['price'].astype(float)
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+            df['asset'] = asset.upper()
+            df['interval'] = interval
+            df = df.sort_values('datetime').reset_index(drop=True)
+            return df[['asset', 'interval', 'timestamp', 'datetime', 'price']]
+
+        return data
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching market price for {asset}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status: {e.response.status_code}")
+            logger.error(f"Response text: {e.response.text}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching market price for {asset}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching market price for {asset}: {e}")
+        return None
+
+
 def _normalize_timeseries_data(
     data: Union[Dict[str, Any], List[Dict[str, Any]]],
     chain: str,
