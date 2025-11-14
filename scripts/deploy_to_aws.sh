@@ -1,6 +1,9 @@
 #!/bin/bash
 # Quick deployment script for AWS
 # Usage: ./scripts/deploy_to_aws.sh
+# 
+# Note: Connect to AWS via Session Manager (AWS Console → EC2 → Connect → Session Manager)
+# Once connected, navigate to project directory and run this script
 
 set -e  # Exit on error
 

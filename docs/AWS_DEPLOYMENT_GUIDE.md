@@ -18,18 +18,21 @@ This guide walks you through deploying the new simple MA crossover strategy to y
 
 ## Step-by-Step Deployment
 
-### Step 1: Connect to AWS Instance
+### Step 1: Connect to AWS Instance via Session Manager
 
+**Using AWS Console:**
+1. Go to AWS Console → EC2 → Instances
+2. Select your instance
+3. Click "Connect" button
+4. Choose "Session Manager" tab
+5. Click "Connect"
+
+**Using AWS CLI (if configured):**
 ```bash
-# Replace with your actual AWS instance details
-ssh -i /path/to/your-key.pem ubuntu@your-aws-instance-ip
-# OR if using EC2 Instance Connect
-aws ec2-instance-connect send-ssh-public-key \
-  --instance-id i-xxxxxxxxxxxxx \
-  --availability-zone us-east-1a \
-  --instance-os-user ubuntu \
-  --ssh-public-key file://~/.ssh/id_rsa.pub
+aws ssm start-session --target i-xxxxxxxxxxxxx
 ```
+
+**Note:** Once connected via Session Manager, you'll have a terminal session. All commands below work the same as SSH.
 
 ### Step 2: Navigate to Project Directory
 
