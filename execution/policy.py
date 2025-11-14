@@ -22,7 +22,8 @@ class PolicyConfig:
     max_signal: float = 0.05
     default_regime_prob: float = 0.5
     min_confidence: float = 0.6
-    min_trade_fraction: float = 0.01  # minimum trade size as fraction of portfolio
+    # min_notional: Dict[str, float] = field(default_factory=lambda: {})
+    min_trade_fraction: float = 0.01  # minimum 1% of portfolio per trade
 
 
 def apply_policy(

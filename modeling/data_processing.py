@@ -22,12 +22,27 @@ def _load_table(db_path: Path, table: str) -> pd.DataFrame:
     return df
 
 
-def load_ohlcv(db_path: Path, pair: str = DEFAULT_PAIR) -> pd.DataFrame:
-    df = _load_table(db_path, 'ohlcv')
-    df = df[df['pair'] == pair].copy()
+def load_ohlcv(db_path: Path, pair: str = DEFAULT_PAIR, interval: str = '1m') -> pd.DataFrame:
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql(
+            '''
+            SELECT pair, interval, timestamp, datetime, open, high, low, close, volume
+            FROM ohlcv
+            WHERE pair = ? AND interval = ?
+            ORDER BY datetime
+            ''',
+            conn,
+            params=(pair, interval),
+        )
+    if df.empty:
+        return df
     df['datetime'] = pd.to_datetime(df['datetime'])
-    df = df.sort_values('datetime').reset_index(drop=True)
-    return df
+    df['open'] = pd.to_numeric(df['open'], errors='coerce')
+    df['high'] = pd.to_numeric(df['high'], errors='coerce')
+    df['low'] = pd.to_numeric(df['low'], errors='coerce')
+    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+    df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0.0)
+    return df.reset_index(drop=True)
 
 
 def _load_fear_greed_series() -> pd.DataFrame:
@@ -54,7 +69,12 @@ def _load_fear_greed_series() -> pd.DataFrame:
 
 
 def compute_daily_features(db_path: Path, pair: str = DEFAULT_PAIR, label_mode: str = 'ternary') -> pd.DataFrame:
-    ohlcv = load_ohlcv(db_path, pair)
+    ohlcv = load_ohlcv(db_path, pair, interval='1m')
+    if ohlcv.empty:
+        ohlcv = load_ohlcv(db_path, pair, interval='1d')
+        if ohlcv.empty:
+            raise ValueError(f"No OHLCV data available for {pair} (1m or 1d).")
+
     ohlcv['date'] = ohlcv['datetime'].dt.date
     daily = ohlcv.groupby('date').agg({
         'close': 'last',
@@ -249,15 +269,22 @@ def prepare_daily_dataset(
 
 
 def compute_hourly_features(db_path: Path, sequence_length: int = 24, pair: str = DEFAULT_PAIR) -> Tuple[np.ndarray, np.ndarray]:
-    ohlcv = load_ohlcv(db_path, pair)
-    ohlcv = ohlcv.set_index('datetime')
-    hourly = ohlcv.resample('1H').agg({
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'sum'
-    }).dropna()
+    ohlcv_1m = load_ohlcv(db_path, pair, interval='1m')
+    if not ohlcv_1m.empty:
+        hourly = ohlcv_1m.set_index('datetime').resample('1H').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).dropna()
+    else:
+        hourly_1h = load_ohlcv(db_path, pair, interval='1h')
+        if hourly_1h.empty:
+            raise ValueError(f"No hourly data available for {pair}.")
+        hourly = hourly_1h.set_index('datetime')[['open', 'high', 'low', 'close', 'volume']].copy()
+
+    hourly = hourly.sort_index()
     hourly['return'] = hourly['close'].pct_change().fillna(0.0)
     hourly['volatility'] = (hourly['high'] - hourly['low']) / hourly['close']
     hourly['volume_norm'] = (hourly['volume'] - hourly['volume'].mean()) / (hourly['volume'].std() + 1e-8)
@@ -400,15 +427,22 @@ def prepare_hourly_dataset(
 
 
 def compute_execution_features(db_path: Path, lookback: int = 24, pair: str = DEFAULT_PAIR) -> Tuple[np.ndarray, np.ndarray]:
-    ohlcv = load_ohlcv(db_path, pair)
-    ohlcv = ohlcv.set_index('datetime')
-    hourly = ohlcv.resample('1H').agg({
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'sum'
-    }).dropna()
+    ohlcv_1m = load_ohlcv(db_path, pair, interval='1m')
+    if not ohlcv_1m.empty:
+        hourly = ohlcv_1m.set_index('datetime').resample('1H').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).dropna()
+    else:
+        hourly_1h = load_ohlcv(db_path, pair, interval='1h')
+        if hourly_1h.empty:
+            raise ValueError(f"No hourly data available for execution features for {pair}.")
+        hourly = hourly_1h.set_index('datetime')[['open', 'high', 'low', 'close', 'volume']].copy()
+
+    hourly = hourly.sort_index()
     hourly['return'] = hourly['close'].pct_change().fillna(0.0)
     hourly['volatility'] = (hourly['high'] - hourly['low']) / hourly['close']
     hourly['volume_norm'] = (hourly['volume'] - hourly['volume'].mean()) / (hourly['volume'].std() + 1e-8)

@@ -61,8 +61,14 @@ class Config:
         self._config['update_interval'] = int(os.getenv('UPDATE_INTERVAL', '60'))
         self._config['use_fallback'] = os.getenv('USE_FALLBACK', 'true').lower() == 'true'
         self._config['cache_max_size'] = int(os.getenv('CACHE_MAX_SIZE', '10'))
-        self._config['fetch_intraday_market_data'] = os.getenv('FETCH_INTRADAY_MARKET_DATA', 'true').lower() == 'true'
-        self._config['use_roostoo_intraday'] = os.getenv('USE_ROOSTOO_INTRADAY', 'true').lower() == 'true'
+        self._config['fetch_intraday_market_data'] = os.getenv('FETCH_INTRADAY_MARKET_DATA', 'false').lower() == 'true'
+        self._config['use_roostoo_intraday'] = os.getenv('USE_ROOSTOO_INTRADAY', 'false').lower() == 'true'
+        self._config['use_ccxt_ohlcv'] = os.getenv('USE_CCXT_OHLCV', 'false').lower() == 'true'
+        self._config['ccxt_exchanges'] = os.getenv('CCXT_EXCHANGES')
+        self._config['ccxt_ohlcv_limit'] = int(os.getenv('CCXT_OHLCV_LIMIT', '1000'))
+        self._config['ccxt_max_fetches'] = int(os.getenv('CCXT_MAX_FETCHES', '20'))
+        self._config['ccxt_start_date'] = os.getenv('CCXT_START_DATE')
+        self._config['use_horus_market_price'] = os.getenv('USE_HORUS_MARKET_PRICE', 'false').lower() == 'true'
         default_pairs = os.getenv('DEFAULT_PAIRS')
         if default_pairs:
             self._config['default_pairs'] = default_pairs
@@ -106,6 +112,12 @@ class Config:
                 'cache_max_size': self._config.get('cache_max_size', 10),
                 'fetch_intraday_market_data': self._config.get('fetch_intraday_market_data', True),
                 'use_roostoo_intraday': self._config.get('use_roostoo_intraday', True),
+                'use_ccxt_ohlcv': self._config.get('use_ccxt_ohlcv', False),
+                'ccxt_exchanges': self._config.get('ccxt_exchanges'),
+                'ccxt_ohlcv_limit': self._config.get('ccxt_ohlcv_limit', 1000),
+                'ccxt_max_fetches': self._config.get('ccxt_max_fetches', 20),
+                'ccxt_start_date': self._config.get('ccxt_start_date'),
+                'use_horus_market_price': self._config.get('use_horus_market_price', False),
                 'default_pairs': self._config.get('default_pairs'),
                 'log_level': self._config.get('log_level', 'INFO'),
             }
@@ -199,6 +211,36 @@ class Config:
     def use_roostoo_intraday(self) -> bool:
         """Whether to pull intraday bars directly from Roostoo rather than CoinMarketCap."""
         return self._config.get('use_roostoo_intraday', True)
+
+    @property
+    def use_ccxt_ohlcv(self) -> bool:
+        """Whether to fetch OHLCV via CCXT exchanges."""
+        return self._config.get('use_ccxt_ohlcv', False)
+
+    @property
+    def ccxt_exchanges(self) -> Optional[str]:
+        """Comma-separated list of CCXT exchange ids to try."""
+        return self._config.get('ccxt_exchanges')
+
+    @property
+    def ccxt_ohlcv_limit(self) -> int:
+        """Maximum number of OHLCV rows to fetch via CCXT."""
+        return self._config.get('ccxt_ohlcv_limit', 1000)
+
+    @property
+    def ccxt_max_fetches(self) -> int:
+        """Maximum number of paginated fetches per pair/interval."""
+        return self._config.get('ccxt_max_fetches', 20)
+
+    @property
+    def ccxt_start_date(self) -> Optional[str]:
+        """Optional ISO date to start CCXT fetching from."""
+        return self._config.get('ccxt_start_date')
+
+    @property
+    def use_horus_market_price(self) -> bool:
+        """Whether to pull Horus market price series into OHLCV."""
+        return self._config.get('use_horus_market_price', False)
 
     @property
     def default_pairs(self) -> list[str]:

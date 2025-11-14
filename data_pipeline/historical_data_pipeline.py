@@ -5,9 +5,11 @@ Fetches market, on-chain, and sentiment datasets and stores them in SQLite for m
 """
 
 import sqlite3
+import time
 from pathlib import Path
 from typing import List, Optional
 import time
+from datetime import datetime, timezone
 import pandas as pd
 
 from config import get_config, get_fear_greed_csv_path
@@ -25,6 +27,7 @@ from .coinmarketcap_api import (
     get_top_market_cap_symbols,
 )
 from .roostoo_api import get_exchange_info
+from .ccxt_source import fetch_ohlcv_via_ccxt, DEFAULT_EXCHANGES as CCXT_DEFAULT_EXCHANGES
 
 DEFAULT_PAIRS = [
     'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XRP/USD',
@@ -46,10 +49,19 @@ HORUS_SUPPORTED_ASSETS = {
 }
 HORUS_ASSETS = sorted({p.split('/')[0].upper() for p in DEFAULT_PAIRS} & HORUS_SUPPORTED_ASSETS)
 HORUS_MARKET_INTERVALS = ['1h', '1d']
+HORUS_INTERVAL_SECONDS = {
+    '15m': 15 * 60 * 96 * 14,   # 2 weeks
+    '1h': 3600 * 24 * 30,       # 30 days
+    '1d': 86400 * 365 * 5,      # 5 years
+}
+HORUS_RETRY_DELAYS = (1, 2, 4, 8, 16)
+HORUS_REQUEST_THROTTLE = 0.5  # seconds between successful requests
+MAX_HORUS_PRICE_REQUESTS = 200
 CMC_INTERVAL_MAP = {
     '1d': '1d',
     '1h': '1h',
 }
+CCXT_DEFAULT_INTERVALS = ['1h', '1d']
 
 
 def _prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -113,7 +125,58 @@ def fetch_and_store_whale_net_flow(conn: sqlite3.Connection, chains: List[str]) 
         print("[WARN] No whale net flow data fetched.")
 
 
+def _fetch_full_horus_price_series(asset: str, interval: str) -> pd.DataFrame:
+    """Iteratively fetch the full price history for an asset/interval from Horus."""
+    step_seconds = HORUS_INTERVAL_SECONDS.get(interval, 3600 * 24 * 30)
+    end_ts = int(datetime.now(timezone.utc).timestamp()) + 60
+    frames: List[pd.DataFrame] = []
+    seen: set[int] = set()
+
+    for _ in range(MAX_HORUS_PRICE_REQUESTS):
+        start_ts = max(0, end_ts - step_seconds)
+        df = None
+
+        for delay in HORUS_RETRY_DELAYS:
+            df = get_market_price(
+                asset=asset,
+                interval=interval,
+                start=start_ts,
+                end=end_ts,
+                as_dataframe=True,
+            )
+            if df is not None:
+                break
+            time.sleep(delay)
+
+        if df is None or df.empty:
+            break
+
+        df = df.drop_duplicates(subset=['timestamp'])
+        df = df[df['timestamp'] < end_ts]
+        df = df[~df['timestamp'].isin(seen)]
+        if df.empty:
+            break
+
+        frames.append(df)
+        seen.update(int(ts) for ts in df['timestamp'].tolist())
+
+        new_end = int(df['timestamp'].min()) - 1
+        if new_end <= 0 or new_end >= end_ts:
+            break
+        end_ts = new_end
+        time.sleep(HORUS_REQUEST_THROTTLE)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.drop_duplicates(subset=['timestamp'])
+    combined = combined.sort_values('timestamp').reset_index(drop=True)
+    return combined
+
+
 def fetch_and_store_market_prices(
+    engine: DataEngine,
     conn: sqlite3.Connection,
     assets: List[str],
     intervals: List[str]
@@ -121,7 +184,7 @@ def fetch_and_store_market_prices(
     frames: List[pd.DataFrame] = []
     for asset in assets:
         for interval in intervals:
-            df = get_market_price(asset=asset, interval=interval, as_dataframe=True)
+            df = _fetch_full_horus_price_series(asset, interval)
             if df is None or df.empty:
                 print(f"[WARN] No Horus market price data for {asset} ({interval})")
                 continue
@@ -138,6 +201,74 @@ def fetch_and_store_market_prices(
     combined = pd.concat(frames, ignore_index=True)
     combined = combined[['asset', 'interval', 'timestamp', 'datetime', 'price']]
     _store_dataframe(conn, combined, 'horus_market_price')
+    store_horus_prices_as_ohlcv(engine, combined)
+
+
+def store_horus_prices_as_ohlcv(engine: DataEngine, price_df: pd.DataFrame) -> None:
+    grouped = price_df.groupby(['asset', 'interval'])
+    for (asset, interval), group in grouped:
+        if group.empty:
+            continue
+        pair = f"{asset}/USD"
+        group_sorted = group.sort_values('datetime')
+        dt = pd.to_datetime(group_sorted['datetime'], errors='coerce', utc=True)
+        mask = ~dt.isna()
+        dt = dt[mask]
+        if dt.empty:
+            continue
+        if hasattr(dt, "dt"):
+            dt = dt.dt.tz_convert(None)
+        prices = group_sorted.loc[mask, 'price'].values
+        ohlc = pd.DataFrame({
+            'open': prices,
+            'high': prices,
+            'low': prices,
+            'close': prices,
+            'volume': 0.0,
+        }, index=dt)
+        try:
+            engine.save_ohlcv_to_db(pair, ohlc, interval=interval)
+        except Exception as exc:
+            print(f"[WARN] Failed to store Horus price for {pair} ({interval}): {exc}")
+
+
+def fetch_and_store_ccxt_ohlcv(
+    engine: DataEngine,
+    pairs: List[str],
+    intervals: List[str],
+    exchanges: Optional[List[str]] = None,
+    limit: int = 1000,
+    max_fetches: int = 20,
+    since_ms: Optional[int] = None,
+) -> None:
+    exchanges = exchanges or list(CCXT_DEFAULT_EXCHANGES)
+    print("\nFetching CCXT OHLCV series...")
+    for interval in intervals:
+        try:
+            print(f"  Interval: {interval} (limit={limit})")
+            for pair in pairs:
+                try:
+                    df = fetch_ohlcv_via_ccxt(
+                        pair,
+                        interval,
+                        limit=limit,
+                        exchanges=exchanges,
+                        since=since_ms,
+                        max_fetches=max_fetches,
+                    )
+                    if df.empty:
+                        print(f"    [WARN] No CCXT data for {pair} ({interval})")
+                        continue
+                    df = df[['datetime', 'open', 'high', 'low', 'close', 'volume']].copy()
+                    df['datetime'] = pd.to_datetime(df['datetime']).dt.tz_convert(None)
+                    df = df.set_index('datetime')
+                    engine.save_ohlcv_to_db(pair, df, interval=interval)
+                    exch = df.attrs.get('exchange') if hasattr(df, 'attrs') else None
+                    print(f"    [OK] Stored {len(df)} rows for {pair} ({interval}) via CCXT{f' [{exch}]' if exch else ''}")
+                except Exception as exc:
+                    print(f"    [ERROR] Failed CCXT fetch for {pair} ({interval}): {exc}")
+        except Exception as exc:
+            print(f"  [ERROR] CCXT interval {interval} failed: {exc}")
 
 
 def get_available_pairs() -> List[str]:
@@ -288,17 +419,41 @@ def main() -> None:
             fetch_and_store_cmc_ohlcv(engine, cmc_pairs, interval='1d', count=700)
             fetch_and_store_cmc_ohlcv(engine, cmc_pairs, interval='1h', count=720)
 
+        if config.use_ccxt_ohlcv:
+            ccxt_pairs = config.default_pairs or DEFAULT_PAIRS
+            ccxt_exchanges = None
+            if config.ccxt_exchanges:
+                ccxt_exchanges = [ex.strip() for ex in config.ccxt_exchanges.split(',') if ex.strip()]
+            ccxt_since_ms = None
+            if config.ccxt_start_date:
+                try:
+                    dt = datetime.fromisoformat(config.ccxt_start_date)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    ccxt_since_ms = int(dt.timestamp() * 1000)
+                except Exception:
+                    print(f"[WARN] Could not parse CCXT_START_DATE '{config.ccxt_start_date}', ignoring.")
+            fetch_and_store_ccxt_ohlcv(
+                engine,
+                ccxt_pairs,
+                CCXT_DEFAULT_INTERVALS,
+                exchanges=ccxt_exchanges,
+                limit=config.ccxt_ohlcv_limit,
+                max_fetches=config.ccxt_max_fetches,
+                since_ms=ccxt_since_ms,
+            )
+
         # Horus metrics
         print("\nFetching Horus metrics...")
         fetch_and_store_transaction_count(conn, HORUS_TRANSACTION_CHAINS)
         fetch_and_store_mining_work(conn, MINING_CHAINS)
         fetch_and_store_chain_tvl(conn, HORUS_TVL_CHAINS)
         fetch_and_store_whale_net_flow(conn, ['bitcoin'])
-        if HORUS_ASSETS:
+        if config.use_horus_market_price and HORUS_ASSETS:
             print("\nFetching Horus market prices (1h & 1d)...")
-            fetch_and_store_market_prices(conn, HORUS_ASSETS, HORUS_MARKET_INTERVALS)
+            fetch_and_store_market_prices(engine, conn, HORUS_ASSETS, HORUS_MARKET_INTERVALS)
         else:
-            print("\nSkipping Horus market prices (no supported assets).")
+            print("\nSkipping Horus market prices (disabled or no supported assets).")
 
         # CoinMarketCap sentiment
         print("\nFetching CoinMarketCap Fear & Greed index...")
