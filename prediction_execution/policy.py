@@ -34,7 +34,7 @@ class NextBarPolicyConfig:
     # Target/stop settings - use fixed percentages for simplicity and reliability
     use_fixed_stops: bool = True      # Use fixed % stops instead of prediction-based
     fixed_stop_pct: float = 0.01      # Fixed stop loss: 1% of entry price (competition setting)
-    fixed_target_pct: float = 0.01    # Fixed target: 1% of entry price (1:1 ratio, competition setting)
+    fixed_target_pct: float = 0.02    # Fixed target: 2% of entry price (1:2 ratio, optimized for 45% win rate)
     # Prediction-based settings (if use_fixed_stops=False)
     target_buffer: float = 0.05      # small buffer above predicted_close (5% of range)
     stop_buffer: float = 0.15         # buffer below predicted_low (15% of range)
