@@ -417,10 +417,10 @@ def _get_ma_signal(
         # Get price history from database
         conn = sqlite3.connect(db_path)
         query = """
-            SELECT close, as_of 
-            FROM horus_prices_1h 
-            WHERE pair = ? 
-            ORDER BY as_of DESC 
+            SELECT close, timestamp as as_of 
+            FROM ohlcv 
+            WHERE pair = ? AND interval = '1h'
+            ORDER BY timestamp DESC 
             LIMIT ?
         """
         min_periods = max(ma_slow_period, 26)
