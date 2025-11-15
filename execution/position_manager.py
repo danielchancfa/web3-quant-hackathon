@@ -196,13 +196,13 @@ class PositionManager:
             try:
                 # Get price history for ATR calculation
                 conn = sqlite3.connect(db_path)
-                    query = """
-                        SELECT high, low, close, timestamp as as_of 
-                        FROM ohlcv 
-                        WHERE pair = ? AND interval = '1h'
-                        ORDER BY timestamp DESC 
-                        LIMIT ?
-                    """
+                query = """
+                    SELECT high, low, close, timestamp as as_of 
+                    FROM ohlcv 
+                    WHERE pair = ? AND interval = '1h'
+                    ORDER BY timestamp DESC 
+                    LIMIT ?
+                """
                 df = pd.read_sql(query, conn, params=(pair, atr_period * 2))
                 conn.close()
                 
