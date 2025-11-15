@@ -153,6 +153,65 @@ class PositionManager:
                         assets_total[sym] = assets_total.get(sym, 0.0) + qty
 
         return cash_total, assets_total
+    
+    def check_stop_take_profit(
+        self, 
+        pair: str, 
+        stop_pct: float = 0.01, 
+        target_pct: float = 0.02
+    ) -> Dict[str, Any]:
+        """
+        Check if position should be closed due to stop-loss or take-profit.
+        
+        Returns:
+            dict with 'should_close' (bool), 'reason' (str), 'notional' (float)
+        """
+        if pair not in self.entry_prices:
+            return {"should_close": False, "reason": "no_entry_price", "notional": 0.0}
+        
+        current_notional = self.get_pair_notional(pair)
+        if current_notional <= 0:
+            return {"should_close": False, "reason": "no_position", "notional": 0.0}
+        
+        entry_price = self.entry_prices[pair]
+        current_price = self.prices.get(pair)
+        
+        if current_price is None or current_price <= 0:
+            return {"should_close": False, "reason": "no_current_price", "notional": 0.0}
+        
+        # Calculate price change
+        price_change_pct = (current_price - entry_price) / entry_price
+        
+        # Check stop-loss (1% down)
+        if price_change_pct <= -stop_pct:
+            return {
+                "should_close": True,
+                "reason": f"stop_loss_hit_{price_change_pct*100:.2f}%",
+                "notional": current_notional,
+                "entry_price": entry_price,
+                "current_price": current_price,
+                "price_change_pct": price_change_pct,
+            }
+        
+        # Check take-profit (2% up)
+        if price_change_pct >= target_pct:
+            return {
+                "should_close": True,
+                "reason": f"take_profit_hit_{price_change_pct*100:.2f}%",
+                "notional": current_notional,
+                "entry_price": entry_price,
+                "current_price": current_price,
+                "price_change_pct": price_change_pct,
+            }
+        
+        return {
+            "should_close": False,
+            "reason": f"holding_{price_change_pct*100:.2f}%",
+            "notional": current_notional,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "price_change_pct": price_change_pct,
+        }
 
 
 
