@@ -60,12 +60,73 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _get_all_checkpoint_pairs(checkpoint_dir: Path) -> list:
+    """Get all pairs that have checkpoints."""
+    pairs = []
+    if not checkpoint_dir.exists():
+        return pairs
+    
+    for item in checkpoint_dir.iterdir():
+        if item.is_dir():
+            # Skip non-pair directories
+            if item.name in ['final', 'next', 'run', 'binary']:
+                continue
+            # Convert directory name to pair format (e.g., ADA_USD -> ADA/USD)
+            pair_name = item.name.replace('_', '/')
+            pairs.append(pair_name)
+    
+    return sorted(pairs)
+
+
+def _get_all_database_pairs(db_path: Path) -> list:
+    """Get all pairs that have price data in database."""
+    pairs = []
+    if not db_path.exists():
+        return pairs
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT pair FROM horus_prices_1h ORDER BY pair")
+        pairs = [row[0] for row in cursor.fetchall()]
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Error querying database for pairs: {e}")
+    
+    return pairs
+
+
 def main() -> None:
     args = parse_args()
-    pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
+    requested_pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
     config = get_config()
     db_path = Path(config.db_path)
     checkpoint_dir = Path(args.checkpoint_dir)
+    
+    # Auto-detect all available pairs
+    all_checkpoint_pairs = _get_all_checkpoint_pairs(checkpoint_dir)
+    all_database_pairs = _get_all_database_pairs(db_path)
+    
+    # For hybrid strategy: use intersection of checkpoints and database pairs
+    # This ensures both models can trade all pairs
+    if args.hybrid if hasattr(args, 'hybrid') else False:
+        # Use intersection: pairs that both models can trade
+        aligned_pairs = sorted(list(set(all_checkpoint_pairs) & set(all_database_pairs)))
+        
+        # Also include any requested pairs that might not be in intersection
+        # (in case user wants specific pairs)
+        final_pairs = sorted(list(set(aligned_pairs) | set(requested_pairs)))
+        
+        logger.info(f"🔍 Auto-detected {len(all_checkpoint_pairs)} pairs with checkpoints")
+        logger.info(f"🔍 Auto-detected {len(all_database_pairs)} pairs with price data")
+        logger.info(f"🔍 Aligned pairs (both models can trade): {len(aligned_pairs)}")
+        logger.info(f"✅ Using {len(final_pairs)} pairs for hybrid strategy: {final_pairs}")
+        
+        pairs = final_pairs
+    else:
+        # For non-hybrid: use requested pairs
+        pairs = requested_pairs
+        logger.info(f"Using requested pairs: {pairs}")
 
     service = InferenceService(
         db_path=db_path,
@@ -79,17 +140,26 @@ def main() -> None:
 
     policy_config = PolicyConfig()
     execution_config = ExecutionConfig()
+    
+    # Include any pairs with open positions, even if not in the main pairs list
+    # This ensures we can close old positions (e.g., ZEC/USD from before)
+    use_hybrid = args.hybrid if hasattr(args, 'hybrid') else False
+    
+    # Initialize position manager with all pairs we'll trade
     position_manager = PositionManager(pairs)
     
     # Hybrid mode: MA strategy settings
-    use_hybrid = args.hybrid if hasattr(args, 'hybrid') else False
     hybrid_prediction_weight = args.hybrid_prediction_weight if hasattr(args, 'hybrid_prediction_weight') else 0.5
     hybrid_ma_weight = args.hybrid_ma_weight if hasattr(args, 'hybrid_ma_weight') else 0.5
     ma_fast_period = args.ma_fast if hasattr(args, 'ma_fast') else 10
     ma_slow_period = args.ma_slow if hasattr(args, 'ma_slow') else 20
     
     # Store MA state for crossover detection
+    # Initialize for all pairs we might trade, including any with open positions
     ma_state = {pair: {'last_ma_fast': None, 'last_ma_slow': None} for pair in pairs}
+    
+    # Also initialize MA state for any pairs that might have open positions
+    # (will be updated dynamically as we discover them)
 
     while True:
         position_manager.refresh()
@@ -108,8 +178,26 @@ def main() -> None:
         logger.info(json.dumps(results, indent=2))
         logger.info(f"Portfolio value: {total_value:.2f}")
 
-        for pair in pairs:
+        # Get all pairs we need to process:
+        # 1. Pairs from results (prediction model can trade)
+        # 2. Pairs with open positions (need to monitor for stop/take-profit)
+        prediction_pairs = list(results.keys())
+        open_position_pairs = [p for p in position_manager.pair_notionals.keys() if position_manager.get_pair_notional(p) > 0]
+        
+        # Combine: all pairs we should process
+        all_pairs_to_process = sorted(list(set(prediction_pairs + open_position_pairs)))
+        
+        logger.info(f"🔍 Processing {len(all_pairs_to_process)} pairs:")
+        logger.info(f"   • Prediction model pairs: {len(prediction_pairs)}")
+        logger.info(f"   • Pairs with open positions: {len(open_position_pairs)}")
+        logger.info(f"   • Total pairs to process: {all_pairs_to_process}")
+        
+        # Process each pair
+        for pair in all_pairs_to_process:
             current_position = position_manager.get_pair_notional(pair)
+            
+            # Check if we have prediction results for this pair
+            has_prediction = pair in results
             
             # Check stop-loss/take-profit for existing positions
             if current_position > 0:
@@ -158,18 +246,29 @@ def main() -> None:
                         logger.info(f"[{pair}] Paper: Position closed due to stop/take-profit")
                     continue  # Skip to next pair after closing
             
-            # Get prediction-based signal
-            pred_signal = apply_policy(
-                pair=pair,
-                inference_entry=results[pair],
-                portfolio_value=total_value,
-                position_limit_fraction=args.position_limit,
-                current_position_notional=current_position,
-                config=policy_config,
-            )
+            # Get prediction-based signal (only if we have prediction results)
+            if has_prediction:
+                pred_signal = apply_policy(
+                    pair=pair,
+                    inference_entry=results[pair],
+                    portfolio_value=total_value,
+                    position_limit_fraction=args.position_limit,
+                    current_position_notional=current_position,
+                    config=policy_config,
+                )
+            else:
+                # No prediction results (e.g., old position without checkpoint)
+                # Only monitor for stop/take-profit, don't generate new signals
+                logger.info(f"[{pair}] No prediction model available - only monitoring existing position")
+                pred_signal = {"pair": pair, "action": "hold", "notional": 0.0, "reason": "no_prediction_model"}
             
             # Hybrid mode: combine with MA signal
             if use_hybrid:
+                # Initialize MA state for this pair if not already present
+                if pair not in ma_state:
+                    ma_state[pair] = {'last_ma_fast': None, 'last_ma_slow': None}
+                
+                # Get MA signal (always try, even if no prediction)
                 ma_signal = _get_ma_signal(
                     pair=pair,
                     portfolio_value=total_value,
@@ -183,16 +282,21 @@ def main() -> None:
                 )
                 
                 # Combine signals with weights
-                signal = _combine_hybrid_signals(
-                    pred_signal=pred_signal,
-                    ma_signal=ma_signal,
-                    pred_weight=hybrid_prediction_weight,
-                    ma_weight=hybrid_ma_weight,
-                    portfolio_value=total_value,
-                    position_limit_fraction=args.position_limit,
-                    current_position_notional=current_position,
-                )
-                logger.info(f"Hybrid policy: Prediction={pred_signal['action']} (${pred_signal['notional']:.2f}), MA={ma_signal['action']} (${ma_signal['notional']:.2f}), Combined={signal['action']} (${signal['notional']:.2f})")
+                if has_prediction:
+                    signal = _combine_hybrid_signals(
+                        pred_signal=pred_signal,
+                        ma_signal=ma_signal,
+                        pred_weight=hybrid_prediction_weight,
+                        ma_weight=hybrid_ma_weight,
+                        portfolio_value=total_value,
+                        position_limit_fraction=args.position_limit,
+                        current_position_notional=current_position,
+                    )
+                    logger.info(f"Hybrid policy: Prediction={pred_signal['action']} (${pred_signal['notional']:.2f}), MA={ma_signal['action']} (${ma_signal['notional']:.2f}), Combined={signal['action']} (${signal['notional']:.2f})")
+                else:
+                    # No prediction model, use MA signal only
+                    signal = ma_signal
+                    logger.info(f"MA-only policy (no prediction model): {signal['action']} (${signal['notional']:.2f})")
             else:
                 signal = pred_signal
                 logger.info(f"Policy decision: {signal}")
