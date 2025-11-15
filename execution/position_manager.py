@@ -10,6 +10,9 @@ from typing import Dict, Tuple, List, Any
 
 from data_pipeline.roostoo_api import get_balance
 from execution.executor import get_last_price
+from tools.technical_indicators import calculate_atr
+import sqlite3
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +160,20 @@ class PositionManager:
     def check_stop_take_profit(
         self, 
         pair: str, 
-        stop_pct: float = 0.01, 
-        target_pct: float = 0.02
+        stop_pct: float = None, 
+        target_pct: float = None,
+        use_atr: bool = True,
+        atr_period: int = 14,
+        atr_stop_multiplier: float = 1.5,
+        atr_target_multiplier: float = 2.5,
+        db_path: Path = None,
+        min_stop_pct: float = 0.005,  # Minimum 0.5% stop even with ATR
+        max_stop_pct: float = 0.05,   # Maximum 5% stop even with ATR
     ) -> Dict[str, Any]:
         """
         Check if position should be closed due to stop-loss or take-profit.
+        
+        Uses ATR-based adaptive stops by default, or fixed percentage if use_atr=False.
         
         Returns:
             dict with 'should_close' (bool), 'reason' (str), 'notional' (float)
@@ -179,29 +191,96 @@ class PositionManager:
         if current_price is None or current_price <= 0:
             return {"should_close": False, "reason": "no_current_price", "notional": 0.0}
         
+        # Calculate stop and target prices
+        if use_atr and db_path:
+            try:
+                # Get price history for ATR calculation
+                conn = sqlite3.connect(db_path)
+                query = """
+                    SELECT high, low, close, as_of 
+                    FROM horus_prices_1h 
+                    WHERE pair = ? 
+                    ORDER BY as_of DESC 
+                    LIMIT ?
+                """
+                df = pd.read_sql(query, conn, params=(pair, atr_period * 2))
+                conn.close()
+                
+                if len(df) >= atr_period:
+                    # Reverse to chronological order
+                    df = df.iloc[::-1]
+                    high = df['high'].astype(float)
+                    low = df['low'].astype(float)
+                    close = df['close'].astype(float)
+                    
+                    # Calculate ATR
+                    atr = calculate_atr(high, low, close, period=atr_period)
+                    current_atr = float(atr.iloc[-1]) if len(atr) > 0 and not pd.isna(atr.iloc[-1]) else None
+                    
+                    if current_atr and current_atr > 0:
+                        # ATR-based stops
+                        stop_distance = current_atr * atr_stop_multiplier
+                        target_distance = current_atr * atr_target_multiplier
+                        
+                        # Convert to percentages and clamp
+                        stop_pct_atr = stop_distance / entry_price
+                        target_pct_atr = target_distance / entry_price
+                        
+                        # Clamp to min/max
+                        stop_pct_atr = max(min_stop_pct, min(stop_pct_atr, max_stop_pct))
+                        target_pct_atr = max(stop_pct_atr * 1.5, min(target_pct_atr, max_stop_pct * 2))
+                        
+                        stop_price = entry_price - stop_distance
+                        target_price = entry_price + target_distance
+                    else:
+                        # Fallback to fixed if ATR calculation fails
+                        use_atr = False
+            except Exception as e:
+                logger.warning(f"[{pair}] ATR calculation failed: {e}, using fixed stops")
+                use_atr = False
+        
+        # Use fixed percentage if ATR not available or disabled
+        if not use_atr:
+            stop_pct = stop_pct or 0.01  # Default 1%
+            target_pct = target_pct or 0.02  # Default 2%
+            stop_price = entry_price * (1 - stop_pct)
+            target_price = entry_price * (1 + target_pct)
+            stop_pct_atr = stop_pct
+            target_pct_atr = target_pct
+        
         # Calculate price change
         price_change_pct = (current_price - entry_price) / entry_price
         
-        # Check stop-loss (1% down)
-        if price_change_pct <= -stop_pct:
+        # Check stop-loss
+        if current_price <= stop_price:
             return {
                 "should_close": True,
-                "reason": f"stop_loss_hit_{price_change_pct*100:.2f}%",
+                "reason": f"stop_loss_hit_{price_change_pct*100:.2f}%_atr" if use_atr else f"stop_loss_hit_{price_change_pct*100:.2f}%",
                 "notional": current_notional,
                 "entry_price": entry_price,
                 "current_price": current_price,
                 "price_change_pct": price_change_pct,
+                "stop_price": stop_price,
+                "target_price": target_price,
+                "stop_pct": stop_pct_atr,
+                "target_pct": target_pct_atr,
+                "method": "atr" if use_atr else "fixed",
             }
         
-        # Check take-profit (2% up)
-        if price_change_pct >= target_pct:
+        # Check take-profit
+        if current_price >= target_price:
             return {
                 "should_close": True,
-                "reason": f"take_profit_hit_{price_change_pct*100:.2f}%",
+                "reason": f"take_profit_hit_{price_change_pct*100:.2f}%_atr" if use_atr else f"take_profit_hit_{price_change_pct*100:.2f}%",
                 "notional": current_notional,
                 "entry_price": entry_price,
                 "current_price": current_price,
                 "price_change_pct": price_change_pct,
+                "stop_price": stop_price,
+                "target_price": target_price,
+                "stop_pct": stop_pct_atr,
+                "target_pct": target_pct_atr,
+                "method": "atr" if use_atr else "fixed",
             }
         
         return {
@@ -211,6 +290,11 @@ class PositionManager:
             "entry_price": entry_price,
             "current_price": current_price,
             "price_change_pct": price_change_pct,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "stop_pct": stop_pct_atr,
+            "target_pct": target_pct_atr,
+            "method": "atr" if use_atr else "fixed",
         }
 
 

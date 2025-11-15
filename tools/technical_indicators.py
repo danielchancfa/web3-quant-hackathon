@@ -112,6 +112,28 @@ def get_technical_signals(
     return signals
 
 
+def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """
+    Calculate Average True Range (ATR) for adaptive stop-loss/take-profit.
+    
+    ATR measures market volatility. Higher ATR = more volatile = wider stops needed.
+    """
+    # True Range = max of:
+    #   1. High - Low
+    #   2. abs(High - Previous Close)
+    #   3. abs(Low - Previous Close)
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # ATR is the moving average of True Range
+    atr = true_range.rolling(window=period).mean()
+    
+    return atr
+
+
 def get_technical_signals_strict(
     prices: pd.Series,
     rsi_oversold: float = 30.0,

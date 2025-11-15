@@ -44,6 +44,19 @@ def parse_args() -> argparse.Namespace:
                         help="Weight for MA strategy in hybrid mode (default: 0.5)")
     parser.add_argument('--ma_fast', type=int, default=10, help="Fast MA period for hybrid mode")
     parser.add_argument('--ma_slow', type=int, default=20, help="Slow MA period for hybrid mode")
+    parser.add_argument('--use_atr_stops', action='store_true',
+                        help="Use ATR-based adaptive stop-loss/take-profit (default: True, enabled by default)")
+    parser.add_argument('--no_atr_stops', action='store_true',
+                        help="Disable ATR-based stops, use fixed percentage instead")
+    parser.add_argument('--atr_period', type=int, default=14, help="ATR period (default: 14)")
+    parser.add_argument('--atr_stop_multiplier', type=float, default=1.5,
+                        help="ATR multiplier for stop loss (default: 1.5)")
+    parser.add_argument('--atr_target_multiplier', type=float, default=2.5,
+                        help="ATR multiplier for take profit (default: 2.5)")
+    parser.add_argument('--min_stop_pct', type=float, default=0.005,
+                        help="Minimum stop loss % even with ATR (default: 0.5%)")
+    parser.add_argument('--max_stop_pct', type=float, default=0.05,
+                        help="Maximum stop loss % even with ATR (default: 5%)")
     return parser.parse_args()
 
 
@@ -102,8 +115,13 @@ def main() -> None:
             if current_position > 0:
                 stop_check = position_manager.check_stop_take_profit(
                     pair=pair,
-                    stop_pct=0.01,  # 1% stop loss
-                    target_pct=0.02,  # 2% take profit
+                    use_atr=not getattr(args, 'no_atr_stops', False),  # Default: True (use ATR)
+                    atr_period=getattr(args, 'atr_period', 14),
+                    atr_stop_multiplier=getattr(args, 'atr_stop_multiplier', 1.5),
+                    atr_target_multiplier=getattr(args, 'atr_target_multiplier', 2.5),
+                    db_path=db_path,
+                    min_stop_pct=getattr(args, 'min_stop_pct', 0.005),
+                    max_stop_pct=getattr(args, 'max_stop_pct', 0.05),
                 )
                 if stop_check["should_close"]:
                     logger.info(
