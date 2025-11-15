@@ -1,14 +1,240 @@
-# AI Web3 Trading Bot - Data Engine
+# AI Web3 Trading Bot - Hybrid Transformer & Technical Analysis Strategy
 
-This is the Data Engine component of the AI Web3 Trading Bot for the Roostoo Trading Competition.
+A sophisticated algorithmic trading system combining deep learning transformer models with classical technical analysis for the Roostoo Trading Competition.
 
-## 🏗️ Architecture
+## 🎯 Strategy Overview
+
+Our trading strategy employs a **hybrid approach** that combines the predictive power of transformer-based deep learning models with the reliability of proven technical indicators. This dual-model architecture provides robust signal generation while maintaining risk-adjusted returns across diverse market conditions.
+
+### Core Philosophy
+
+- **Diversification of Signals**: Combine multiple independent signal sources to reduce false positives
+- **Adaptive Risk Management**: Dynamic position sizing and stop-loss/take-profit based on market volatility (ATR)
+- **Data-Driven Decisions**: Continuous data pipeline ensures models operate on fresh, high-quality market data
+- **Robust Execution**: Self-contained scheduler with integrated data collection, inference, and trade execution
+
+## 🌐 Trading Universe
+
+### Pair Selection Strategy
+
+Our trading strategy focuses on the **top 20 market capitalization cryptocurrencies** (excluding stablecoins) for several critical reasons:
+
+#### Why Top Market Cap Pairs?
+
+1. **Liquidity Advantage**:
+   - Higher trading volumes ensure better execution prices
+   - Reduced slippage and market impact
+   - More stable bid-ask spreads
+   - Lower transaction costs
+
+2. **Data Quality & History**:
+   - Longer price history provides more training data
+   - More reliable technical patterns and indicators
+   - Better model generalization (less overfitting)
+   - Richer feature sets from historical data
+
+3. **Market Efficiency**:
+   - More efficient price discovery
+   - Less prone to manipulation
+   - Better correlation with broader market trends
+   - More predictable volatility patterns
+
+4. **Model Performance**:
+   - Transformer models require substantial historical data
+   - Top market cap pairs have sufficient data for robust training
+   - Better signal-to-noise ratio in price movements
+   - More reliable prediction accuracy
+
+#### Current Trading Pairs
+
+We actively trade **13 pairs** from the top market cap universe:
+- **Major Cryptocurrencies**: BTC/USD, ETH/USD, BNB/USD, SOL/USD
+- **Altcoins**: ADA/USD, LINK/USD, DOGE/USD, LTC/USD, XRP/USD
+- **Emerging Assets**: SUI/USD, TRX/USD, XLM/USD, ZEC/USD
+
+#### Exclusion Criteria
+
+- **Stablecoins**: Excluded due to minimal price volatility (USDT, USDC, DAI, etc.)
+- **Low Liquidity Pairs**: Pairs with insufficient trading volume or data history
+- **New Listings**: Pairs without sufficient historical data for model training
+
+This focused approach ensures:
+- ✅ Higher quality signals from well-trained models
+- ✅ Better execution in liquid markets
+- ✅ Reduced risk from illiquid or volatile pairs
+- ✅ More consistent performance across market conditions
+
+## 🧠 Hybrid Model Architecture
+
+### 1. Prediction Model (Transformer-Based Deep Learning)
+
+Our prediction model uses a **three-layer transformer architecture** trained on historical price data, on-chain metrics, and sentiment indicators:
+
+#### Model Stack:
+- **Daily Regime Transformer**: Classifies market regime (bullish/bearish/neutral) using 60-day sequences
+- **Hourly Signal Transformer**: Predicts short-term price movements using 36-hour sequences  
+- **Execution Model**: Generates buy/sell/hold signals with confidence scores
+
+#### Training Process:
+1. **Data Collection**: Multi-source data pipeline fetches:
+   - OHLCV price data (1h, 1d intervals)
+   - On-chain metrics (transaction counts, TVL, whale flows)
+   - Sentiment data (Fear & Greed Index)
+   
+2. **Feature Engineering**: 
+   - Technical indicators (RSI, MACD, Bollinger Bands, ATR)
+   - Price returns and volatility measures
+   - Normalized features for model input
+
+3. **Training**: 
+   - Separate models per trading pair (13 pairs: ADA, BTC, ETH, BNB, LINK, SOL, DOGE, LTC, SUI, TRX, XLM, XRP, ZEC)
+   - Trained on historical data with proper train/validation splits
+   - Models saved to `model_checkpoints/{PAIR}/`
+
+#### Inference:
+- Models run inference every hour on fresh data
+- Outputs: predicted price movements, confidence scores, and directional signals
+- Confidence threshold: 0.55 minimum for trade execution
+
+### 2. Technical Analysis Model (Moving Average Crossover)
+
+A complementary **classical technical analysis** component:
+
+- **Fast MA**: 10-period moving average
+- **Slow MA**: 20-period moving average
+- **Signals**:
+  - **Golden Cross** (Buy): Fast MA crosses above Slow MA + price > Fast MA
+  - **Death Cross** (Sell): Fast MA crosses below Slow MA + price < Fast MA
+- **Crossover Detection**: Tracks previous MA values to detect actual crossovers (not just conditions)
+
+### 3. Hybrid Signal Combination
+
+The two models are combined with **equal weighting (50/50)**:
+
+- **Both Agree**: Full position size (100% allocation)
+- **One Signals**: Half position size (50% allocation)  
+- **Both Hold**: No trade
+
+This approach:
+- ✅ Reduces false signals (requires agreement)
+- ✅ Captures opportunities when one model is confident
+- ✅ Maintains diversification across signal types
+
+## 💰 Position Sizing & Risk Management
+
+### Position Sizing Logic
+
+- **Base Risk**: 10% of portfolio value per trade
+- **Confidence Scaling**: Position size scales with model confidence
+  - Formula: `notional = portfolio_value × 0.10 × confidence`
+- **Maximum Position**: 20% of portfolio per trading pair (prevents over-concentration)
+- **Hybrid Allocation**: 
+  - Prediction model: 50% of base risk
+  - MA strategy: 50% of base risk
+  - Combined when both agree: 100% of base risk
+
+### Risk Management
+
+#### Adaptive Stop-Loss & Take-Profit (ATR-Based)
+
+We use **Average True Range (ATR)** to adapt to market volatility:
+
+- **Stop-Loss**: Entry price - (ATR × 1.5)
+- **Take-Profit**: Entry price + (ATR × 2.5)
+- **Safety Limits**: 
+  - Minimum stop: 0.5% of entry price
+  - Maximum stop: 5% of entry price
+- **Risk/Reward Ratio**: ~1.67:1 (optimized for 45%+ win rate)
+
+#### Position Monitoring
+
+- **Continuous Monitoring**: Every hour, all open positions are checked
+- **Automatic Exits**: Positions close automatically when:
+  - Stop-loss is hit (limit losses)
+  - Take-profit is hit (lock in gains)
+  - Model generates SELL signal (prediction or MA death cross)
+
+## 📊 Buy/Sell Decision Logic
+
+### Entry Signals
+
+1. **Prediction Model Entry**:
+   - Confidence ≥ 0.55
+   - Predicted price movement ≥ 5 basis points
+   - Positive edge (predicted close > reference close for BUY)
+
+2. **MA Strategy Entry**:
+   - Golden cross detected (Fast MA crosses above Slow MA)
+   - Current price > Fast MA (confirms trend)
+
+3. **Hybrid Entry**:
+   - Both models agree → Full position
+   - Only one model signals → Half position
+
+### Exit Signals
+
+1. **Automatic Exits** (Priority):
+   - Stop-loss hit (ATR-based)
+   - Take-profit hit (ATR-based)
+
+2. **Model-Based Exits**:
+   - Prediction model: Negative signal (predicted price drop)
+   - MA strategy: Death cross (Fast MA crosses below Slow MA)
+   - Both models agree to SELL → Close 100% of position
+   - One model says SELL → Close 50% of position
+
+## 🔄 Trading Workflow
+
+### Hourly Execution Cycle
+
+1. **Data Pipeline Update** (Step 1):
+   - Fetches fresh price data from Roostoo API
+   - Updates on-chain metrics (Horus API)
+   - Updates sentiment data (CoinMarketCap)
+   - Stores in SQLite database (`horus_prices_1h` table)
+
+2. **Position Refresh** (Step 2):
+   - Fetches current balances from exchange
+   - Updates portfolio valuation
+   - Checks all open positions
+
+3. **Inference** (Step 3):
+   - Runs prediction models for all pairs (batch processing)
+   - Calculates MA signals for all pairs
+   - Generates combined hybrid signals
+
+4. **Trade Execution** (Step 4):
+   - For each pair:
+     - Check stop-loss/take-profit (close if hit)
+     - Evaluate entry signals (prediction + MA)
+     - Combine signals with weights
+     - Execute trades via Roostoo API
+   - Update position manager
+
+5. **Sleep** (Step 5):
+   - Wait for loop interval (default: 3600 seconds = 1 hour)
+   - Repeat cycle
+
+### Auto-Detection & Pair Management
+
+- **Automatic Pair Discovery**: 
+  - Scans `model_checkpoints/` for available models
+  - Queries database for pairs with price data
+  - Uses intersection (pairs both models can trade)
+- **Open Position Monitoring**: 
+  - Always monitors pairs with open positions
+  - Ensures old positions (e.g., from previous runs) can be closed
+  - Prevents orphaned positions
+
+## 🏗️ System Architecture
 
 The project follows a modular architecture:
 
-1. **Data Engine** (`data_engine.py`) - Collects, preprocesses, and feeds structured data
-2. **Signal Engine** (TODO) - Generates trading signals using AI/ML models
-3. **Execution Engine** (TODO) - Executes trades via Roostoo API
+1. **Data Engine** (`data_pipeline/`) - Collects, preprocesses, and stores market data
+2. **Prediction Engine** (`prediction_model/`, `inference_service.py`) - Deep learning inference
+3. **Policy Engine** (`prediction_execution/policy.py`) - Signal generation and position sizing
+4. **Execution Engine** (`execution/`) - Trade execution via Roostoo API
+5. **Scheduler** (`scheduler.py`) - Orchestrates the entire trading loop
 
 ## 📦 Setup
 
