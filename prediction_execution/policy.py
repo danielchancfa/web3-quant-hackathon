@@ -18,7 +18,10 @@ class NextBarPolicyConfig:
     min_confidence: float = 0.55
     min_edge: float = 5e-4            # ~5 bps move required
     # Strategy mode: how to use predictions
-    strategy_mode: str = "technical"  # "direct", "filter", "technical", "sizing", "hold_time"
+    strategy_mode: str = "hybrid"  # "direct", "filter", "technical", "sizing", "hold_time", "hybrid"
+    # For "hybrid" mode: combine prediction model and MA strategy
+    hybrid_prediction_weight: float = 0.5  # 50% allocation to prediction model
+    hybrid_ma_weight: float = 0.5          # 50% allocation to MA strategy
     # For "filter" mode: require trend confirmation
     use_trend_filter: bool = True      # Require price above/below MA for entry
     trend_ma_periods: int = 20        # Moving average period for trend filter
@@ -115,7 +118,15 @@ def evaluate_forecast(
     # NOTE: Technical indicators (MA crossover) require price history
     # For live trading, this should be handled by the executor with price history from database/API
     # For now, we pass through predictions - executor can override based on technical signals
-    if cfg.strategy_mode == "filter":
+    if cfg.strategy_mode == "hybrid":
+        # Hybrid mode: combine prediction model and MA strategy
+        # Allocate percentage to prediction-based trades
+        # MA signals will be checked separately and combined
+        instruction["strategy_mode"] = "hybrid"
+        instruction["prediction_weight"] = cfg.hybrid_prediction_weight
+        instruction["ma_weight"] = cfg.hybrid_ma_weight
+        # Continue with prediction-based calculation, but weight will be applied later
+    elif cfg.strategy_mode == "filter":
         # Filter mode: use predictions as confirmation, not direct signal
         # Need trend information from price history - will be checked in backtest
         # For now, just pass through the prediction signal
@@ -134,6 +145,13 @@ def evaluate_forecast(
     max_position = portfolio_value * cfg.max_risk_fraction
     # Scale base risk by confidence, but ensure minimum effective risk
     base_notional = portfolio_value * cfg.base_risk_fraction * confidence
+    
+    # For hybrid mode, allocate only the prediction weight portion
+    if cfg.strategy_mode == "hybrid":
+        base_notional = base_notional * cfg.hybrid_prediction_weight
+        instruction["prediction_notional"] = base_notional
+        instruction["requires_ma_signal"] = True  # Flag that MA signal should also be checked
+    
     # If we already have a position, only add to it if we're below max
     desired_notional = min(base_notional, max(max_position - current_position_notional, 0.0))
     desired_notional = max(desired_notional, 0.0)
