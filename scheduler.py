@@ -113,9 +113,14 @@ def main() -> None:
             
             # Check stop-loss/take-profit for existing positions
             if current_position > 0:
+                # ATR is enabled by default unless --no_atr_stops is set
+                use_atr = not getattr(args, 'no_atr_stops', False)
+                if hasattr(args, 'use_atr_stops') and args.use_atr_stops:
+                    use_atr = True
+                
                 stop_check = position_manager.check_stop_take_profit(
                     pair=pair,
-                    use_atr=not getattr(args, 'no_atr_stops', False),  # Default: True (use ATR)
+                    use_atr=use_atr,
                     atr_period=getattr(args, 'atr_period', 14),
                     atr_stop_multiplier=getattr(args, 'atr_stop_multiplier', 1.5),
                     atr_target_multiplier=getattr(args, 'atr_target_multiplier', 2.5),
