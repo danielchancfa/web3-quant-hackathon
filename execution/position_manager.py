@@ -38,6 +38,8 @@ class PositionManager:
     asset_qty: Dict[str, float] = field(default_factory=dict)
     prices: Dict[str, float] = field(default_factory=dict)
     pair_notionals: Dict[str, float] = field(default_factory=dict)
+    # Track entry prices for stop-loss/take-profit monitoring
+    entry_prices: Dict[str, float] = field(default_factory=dict)  # pair -> entry_price
 
     def refresh(self) -> None:
         """Fetch balances from Roostoo and compute notionals for tracked pairs."""
@@ -88,12 +90,27 @@ class PositionManager:
         qty_change = notional / price if price > 0 else 0.0
         if side.upper() == "BUY":
             self.cash_usd -= notional
-            self.asset_qty[base] = self.asset_qty.get(base, 0.0) + qty_change
+            current_qty = self.asset_qty.get(base, 0.0)
+            new_qty = current_qty + qty_change
+            self.asset_qty[base] = new_qty
+            # Update entry price (weighted average)
+            if current_qty > 0:
+                # Weighted average of existing and new entry
+                old_entry = self.entry_prices.get(pair, price)
+                total_notional_old = current_qty * old_entry
+                total_notional_new = qty_change * price
+                self.entry_prices[pair] = (total_notional_old + total_notional_new) / new_qty if new_qty > 0 else price
+            else:
+                # New position
+                self.entry_prices[pair] = price
         else:
             self.cash_usd += notional
             self.asset_qty[base] = self.asset_qty.get(base, 0.0) - qty_change
-            if self.asset_qty[base] < 0:
+            if self.asset_qty[base] <= 0:
                 self.asset_qty[base] = 0.0
+                # Clear entry price when position closed
+                if pair in self.entry_prices:
+                    del self.entry_prices[pair]
         # Update notional cache
         self.prices[pair] = price
         self.pair_notionals[pair] = self.asset_qty.get(base, 0.0) * price

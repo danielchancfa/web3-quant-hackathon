@@ -98,6 +98,43 @@ def main() -> None:
         for pair in pairs:
             current_position = position_manager.get_pair_notional(pair)
             
+            # Check stop-loss/take-profit for existing positions
+            if current_position > 0:
+                stop_check = position_manager.check_stop_take_profit(
+                    pair=pair,
+                    stop_pct=0.01,  # 1% stop loss
+                    target_pct=0.02,  # 2% take profit
+                )
+                if stop_check["should_close"]:
+                    logger.info(
+                        f"[{pair}] Stop/Take-profit triggered: {stop_check['reason']} "
+                        f"(Entry: ${stop_check.get('entry_price', 0):.4f}, "
+                        f"Current: ${stop_check.get('current_price', 0):.4f}, "
+                        f"Change: {stop_check.get('price_change_pct', 0)*100:.2f}%)"
+                    )
+                    # Close position
+                    close_notional = stop_check["notional"]
+                    if not args.paper:
+                        trade = execute_trade(
+                            pair=pair,
+                            action="sell",
+                            notional=close_notional,
+                            config=execution_config,
+                        )
+                        if trade.get("status") != "hold" and trade.get("price"):
+                            position_manager.apply_trade(
+                                pair=pair,
+                                side="SELL",
+                                notional=trade.get("notional", close_notional),
+                                price=trade.get("price", 0.0),
+                            )
+                            logger.info(f"[{pair}] Position closed due to stop/take-profit")
+                    else:
+                        price = position_manager.prices.get(pair) or get_last_price(pair)
+                        position_manager.apply_simulated(pair, "sell", close_notional, price)
+                        logger.info(f"[{pair}] Paper: Position closed due to stop/take-profit")
+                    continue  # Skip to next pair after closing
+            
             # Get prediction-based signal
             pred_signal = apply_policy(
                 pair=pair,
