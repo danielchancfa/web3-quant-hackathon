@@ -17,6 +17,7 @@ from execution.policy import apply_policy, PolicyConfig
 from execution.executor import execute_trade, ExecutionConfig, get_last_price
 from execution.position_manager import PositionManager
 from tools.technical_indicators import calculate_moving_averages
+from data_pipeline.historical_data_pipeline import main as update_data_pipeline
 import sqlite3
 import pandas as pd
 
@@ -177,6 +178,21 @@ def main() -> None:
     # (will be updated dynamically as we discover them)
 
     while True:
+        # Step 1: Update data pipeline first (fetch fresh data)
+        logger.info("=" * 80)
+        logger.info("STEP 1: Updating data pipeline...")
+        logger.info("=" * 80)
+        try:
+            update_data_pipeline()
+            logger.info("✅ Data pipeline update complete")
+        except Exception as e:
+            logger.error(f"❌ Error updating data pipeline: {e}")
+            logger.warning("Continuing with existing data in database...")
+        
+        # Step 2: Refresh positions
+        logger.info("=" * 80)
+        logger.info("STEP 2: Refreshing positions...")
+        logger.info("=" * 80)
         position_manager.refresh()
         total_value = position_manager.total_value()
         logger.info(f"Cash USD: {position_manager.cash_usd:.2f}")
@@ -189,6 +205,10 @@ def main() -> None:
             for pair, notional in position_manager.pair_notionals.items():
                 logger.info(f"  {pair}: ${notional:.2f}")
 
+        # Step 3: Get predictions
+        logger.info("=" * 80)
+        logger.info("STEP 3: Getting predictions...")
+        logger.info("=" * 80)
         results = service.run_once()
         logger.info(json.dumps(results, indent=2))
         logger.info(f"Portfolio value: {total_value:.2f}")
