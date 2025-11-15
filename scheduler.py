@@ -121,7 +121,7 @@ def _get_all_database_pairs(db_path: Path) -> list:
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT pair FROM horus_prices_1h ORDER BY pair")
+        cursor.execute("SELECT DISTINCT pair FROM ohlcv WHERE interval = '1h' ORDER BY pair")
         pairs = [row[0] for row in cursor.fetchall()]
         conn.close()
     except Exception as e:
