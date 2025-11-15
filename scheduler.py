@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Dict, Any
 
 from config import get_config
 from inference_service import InferenceService
