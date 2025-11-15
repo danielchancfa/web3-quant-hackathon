@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run trading loop.")
     parser.add_argument('--checkpoint_dir', type=str, required=True)
-    parser.add_argument('--pairs', type=str, required=True,
-                        help="Comma-separated pairs, e.g., BTC/USD,ETH/USD")
+    parser.add_argument('--pairs', type=str, required=False, default=None,
+                        help="Comma-separated pairs, e.g., BTC/USD,ETH/USD. Optional in hybrid mode (auto-detects all pairs)")
     parser.add_argument('--seq_daily', type=int, default=60)
     parser.add_argument('--seq_hourly', type=int, default=36)
     parser.add_argument('--seq_execution', type=int, default=36)
@@ -98,7 +98,6 @@ def _get_all_database_pairs(db_path: Path) -> list:
 
 def main() -> None:
     args = parse_args()
-    requested_pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
     config = get_config()
     db_path = Path(config.db_path)
     checkpoint_dir = Path(args.checkpoint_dir)
@@ -109,22 +108,38 @@ def main() -> None:
     
     # For hybrid strategy: use intersection of checkpoints and database pairs
     # This ensures both models can trade all pairs
-    if args.hybrid if hasattr(args, 'hybrid') else False:
+    use_hybrid = args.hybrid if hasattr(args, 'hybrid') else False
+    
+    if use_hybrid:
         # Use intersection: pairs that both models can trade
         aligned_pairs = sorted(list(set(all_checkpoint_pairs) & set(all_database_pairs)))
         
-        # Also include any requested pairs that might not be in intersection
-        # (in case user wants specific pairs)
-        final_pairs = sorted(list(set(aligned_pairs) | set(requested_pairs)))
-        
-        logger.info(f"🔍 Auto-detected {len(all_checkpoint_pairs)} pairs with checkpoints")
-        logger.info(f"🔍 Auto-detected {len(all_database_pairs)} pairs with price data")
-        logger.info(f"🔍 Aligned pairs (both models can trade): {len(aligned_pairs)}")
-        logger.info(f"✅ Using {len(final_pairs)} pairs for hybrid strategy: {final_pairs}")
+        # In hybrid mode, --pairs is optional and ignored (we auto-detect)
+        # But if provided, we can use it as a filter to limit pairs
+        if args.pairs:
+            requested_pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
+            # Filter aligned pairs to only include requested ones
+            final_pairs = sorted([p for p in aligned_pairs if p in requested_pairs])
+            logger.info(f"🔍 Auto-detected {len(all_checkpoint_pairs)} pairs with checkpoints")
+            logger.info(f"🔍 Auto-detected {len(all_database_pairs)} pairs with price data")
+            logger.info(f"🔍 Aligned pairs (both models can trade): {len(aligned_pairs)}")
+            logger.info(f"🔍 Filtered to requested pairs: {len(final_pairs)}")
+            logger.info(f"✅ Using {len(final_pairs)} pairs for hybrid strategy: {final_pairs}")
+        else:
+            # No --pairs specified, use all aligned pairs
+            final_pairs = aligned_pairs
+            logger.info(f"🔍 Auto-detected {len(all_checkpoint_pairs)} pairs with checkpoints")
+            logger.info(f"🔍 Auto-detected {len(all_database_pairs)} pairs with price data")
+            logger.info(f"✅ Using all {len(final_pairs)} aligned pairs for hybrid strategy: {final_pairs}")
         
         pairs = final_pairs
     else:
-        # For non-hybrid: use requested pairs
+        # For non-hybrid: require --pairs argument
+        if not args.pairs:
+            logger.error("--pairs argument is required when not using --hybrid mode")
+            raise ValueError("--pairs is required in non-hybrid mode")
+        
+        requested_pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
         pairs = requested_pairs
         logger.info(f"Using requested pairs: {pairs}")
 
