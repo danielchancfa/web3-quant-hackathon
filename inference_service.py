@@ -75,13 +75,20 @@ class InferenceService:
             if not pair_dir.exists():
                 raise RuntimeError(f"Checkpoint directory {pair_dir} for pair {pair} not found.")
 
+            # Build a temporary daily dataset only to infer feature dim and num_classes.
+            # We will rebuild fresh datasets on each predict_* call for live data.
+            daily_dataset = prepare_daily_dataset(
+                self.db_path,
+                sequence_length=self.seq_daily,
+                label_mode=self.daily_label_mode,
+                pair=pair,
+            )
+            if len(daily_dataset) <= 0:
+                raise RuntimeError(
+                    f"Daily dataset has no samples for pair {pair} with seq_daily={self.seq_daily}."
+                )
             daily_config = TransformerConfig(
-                feature_dim=prepare_daily_dataset(
-                    self.db_path,
-                    sequence_length=self.seq_daily,
-                    label_mode=self.daily_label_mode,
-                    pair=pair,
-                ).feature_dim,
+                feature_dim=daily_dataset.features.shape[1],
                 dropout=self.dropout,
             )
             num_classes = getattr(daily_dataset, "num_classes", 3)
