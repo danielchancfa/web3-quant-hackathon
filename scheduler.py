@@ -487,49 +487,92 @@ def _combine_hybrid_signals(
     position_limit_fraction: float,
     current_position_notional: float,
 ) -> Dict[str, Any]:
-    """Combine prediction and MA signals with weights."""
-    # Scale prediction notional by weight
+    """
+    Combine prediction and MA signals in hybrid mode.
+
+    Updated SELL logic (no shorts):
+    - If only ONE model (prediction OR MA) says SELL and we have a position:
+        → Sell 50% of current position.
+    - If BOTH models say SELL and we have a position:
+        → Sell 100% of current position (close position).
+    - If no position: never sell (avoid shorts).
+
+    BUY logic remains risk-based using weighted notionals.
+    """
+    # Determine actions
+    pred_action = pred_signal.get("action", "hold")
+    ma_action = ma_signal.get("action", "hold")
+
+    # --- SELL LOGIC: position-based ---
+    pred_wants_sell = (pred_action == "sell")
+    ma_wants_sell = (ma_action == "sell")
+
+    if pred_wants_sell or ma_wants_sell:
+        # Never go short: require existing position
+        if current_position_notional <= 0:
+            return {
+                "pair": pred_signal.get("pair") or ma_signal.get("pair"),
+                "action": "hold",
+                "notional": 0.0,
+                "reason": "hybrid_sell_no_position",
+                "pred_signal": pred_signal,
+                "ma_signal": ma_signal,
+            }
+
+        if pred_wants_sell and ma_wants_sell:
+            # Both models agree → close full position
+            sell_notional = current_position_notional
+            reason = "hybrid_sell_both_models"
+        else:
+            # Only one model wants to sell → close 50% of position
+            sell_notional = 0.5 * current_position_notional
+            reason = "hybrid_sell_single_model"
+
+        return {
+            "pair": pred_signal.get("pair") or ma_signal.get("pair"),
+            "action": "sell",
+            "notional": max(0.0, sell_notional),
+            "reason": reason,
+            "pred_signal": pred_signal,
+            "ma_signal": ma_signal,
+        }
+
+    # --- BUY LOGIC: risk-budget based (unchanged except weighting) ---
+    # Scale prediction/MA notionals by weights
     pred_notional = pred_signal.get("notional", 0.0) * pred_weight
     ma_notional = ma_signal.get("notional", 0.0) * ma_weight
     
-    # Determine combined action
-    pred_action = pred_signal.get("action", "hold")
-    ma_action = ma_signal.get("action", "hold")
-    
-    # If both agree on direction, combine
-    if pred_action == ma_action and pred_action != "hold":
+    # If both agree on BUY direction, combine
+    if pred_action == ma_action and pred_action == "buy":
         combined_notional = pred_notional + ma_notional
         max_position = portfolio_value * position_limit_fraction
-        if pred_action == "buy":
-            remaining_limit = max(0.0, max_position - current_position_notional)
-            combined_notional = min(combined_notional, remaining_limit)
-        else:  # sell
-            combined_notional = min(combined_notional, current_position_notional)
-        
+        remaining_limit = max(0.0, max_position - current_position_notional)
+        combined_notional = min(combined_notional, remaining_limit)
+
         return {
             "pair": pred_signal["pair"],
-            "action": pred_action,
+            "action": "buy",
             "notional": max(0.0, combined_notional),
-            "reason": f"hybrid_{pred_action}_both_agree",
+            "reason": "hybrid_buy_both_agree",
             "pred_signal": pred_signal,
             "ma_signal": ma_signal,
         }
-    # If only one signals, use that one
-    elif pred_action != "hold":
+    # If only one signals BUY, use that one
+    elif pred_action == "buy":
         return {
             "pair": pred_signal["pair"],
-            "action": pred_action,
+            "action": "buy",
             "notional": pred_notional,
-            "reason": f"hybrid_{pred_action}_prediction_only",
+            "reason": "hybrid_buy_prediction_only",
             "pred_signal": pred_signal,
             "ma_signal": ma_signal,
         }
-    elif ma_action != "hold":
+    elif ma_action == "buy":
         return {
             "pair": ma_signal["pair"],
-            "action": ma_action,
+            "action": "buy",
             "notional": ma_notional,
-            "reason": f"hybrid_{ma_action}_ma_only",
+            "reason": "hybrid_buy_ma_only",
             "pred_signal": pred_signal,
             "ma_signal": ma_signal,
         }
