@@ -75,18 +75,13 @@ class InferenceService:
             if not pair_dir.exists():
                 raise RuntimeError(f"Checkpoint directory {pair_dir} for pair {pair} not found.")
 
-            daily_dataset = prepare_daily_dataset(
-                self.db_path,
-                sequence_length=self.seq_daily,
-                label_mode=self.daily_label_mode,
-                pair=pair,
-            )
-            if len(daily_dataset) <= 0:
-                raise RuntimeError(
-                    f"Daily dataset has no samples for pair {pair} with seq_daily={self.seq_daily}."
-                )
             daily_config = TransformerConfig(
-                feature_dim=daily_dataset.features.shape[1],
+                feature_dim=prepare_daily_dataset(
+                    self.db_path,
+                    sequence_length=self.seq_daily,
+                    label_mode=self.daily_label_mode,
+                    pair=pair,
+                ).feature_dim,
                 dropout=self.dropout,
             )
             num_classes = getattr(daily_dataset, "num_classes", 3)
@@ -98,17 +93,12 @@ class InferenceService:
             daily_model.load_state_dict(daily_state)
             daily_model.eval()
 
-            hourly_dataset = prepare_hourly_dataset(
-                self.db_path,
-                sequence_length=self.seq_hourly,
-                pair=pair,
-            )
-            if len(hourly_dataset) <= 0:
-                raise RuntimeError(
-                    f"Hourly dataset has no samples for pair {pair} with seq_hourly={self.seq_hourly}."
-                )
             hourly_config = TransformerConfig(
-                feature_dim=hourly_dataset.features.shape[1],
+                feature_dim=prepare_hourly_dataset(
+                    self.db_path,
+                    sequence_length=self.seq_hourly,
+                    pair=pair,
+                ).features.shape[1],
                 dropout=self.dropout,
             )
             hourly_model = HourlySignalTransformer(hourly_config).to(self.device)
@@ -141,12 +131,9 @@ class InferenceService:
             execution_model.eval()
 
             self.models[pair] = {
-                "daily_dataset": daily_dataset,
                 "daily_model": daily_model,
                 "num_classes": num_classes,
-                "hourly_dataset": hourly_dataset,
                 "hourly_model": hourly_model,
-                "execution_dataset": execution_dataset,
                 "execution_model": execution_model,
             }
 
@@ -155,10 +142,16 @@ class InferenceService:
 
     def predict_daily(self, pair: str) -> Dict[str, Any]:
         model_bundle = self.models[pair]
-        daily_dataset = model_bundle["daily_dataset"]
         daily_model = model_bundle["daily_model"]
         num_classes = model_bundle["num_classes"]
 
+        # Rebuild daily dataset each call to use the freshest data from the DB
+        daily_dataset = prepare_daily_dataset(
+            self.db_path,
+            sequence_length=self.seq_daily,
+            label_mode=self.daily_label_mode,
+            pair=pair,
+        )
         if len(daily_dataset) <= 0:
             raise RuntimeError("Daily dataset empty at inference time.")
         # Use the full dataset as a batch (each item already a sequence)
@@ -182,8 +175,18 @@ class InferenceService:
 
     def predict_hourly(self, pair: str) -> Dict[str, Any]:
         model_bundle = self.models[pair]
-        hourly_dataset = model_bundle["hourly_dataset"]
         hourly_model = model_bundle["hourly_model"]
+
+        # Rebuild hourly dataset each call to use the freshest data from the DB
+        hourly_dataset = prepare_hourly_dataset(
+            self.db_path,
+            sequence_length=self.seq_hourly,
+            pair=pair,
+        )
+        if len(hourly_dataset) <= 0:
+            raise RuntimeError(
+                f"Hourly dataset has no samples for pair {pair} with seq_hourly={self.seq_hourly}."
+            )
 
         features = torch.stack([hourly_dataset[i][0] for i in range(len(hourly_dataset))])
         outputs = hourly_model(features.to(self.device)).detach().cpu().numpy()
@@ -202,8 +205,18 @@ class InferenceService:
 
     def predict_execution(self, pair: str) -> Dict[str, Any]:
         model_bundle = self.models[pair]
-        execution_dataset = model_bundle["execution_dataset"]
         execution_model = model_bundle["execution_model"]
+
+        # Rebuild execution dataset each call to use the freshest data from the DB
+        execution_dataset = prepare_execution_dataset(
+            self.db_path,
+            lookback=self.seq_execution,
+            pair=pair,
+        )
+        if len(execution_dataset) <= 0:
+            raise RuntimeError(
+                f"Execution dataset has no samples for pair {pair} with seq_execution={self.seq_execution}."
+            )
 
         features = torch.stack([execution_dataset[i][0] for i in range(len(execution_dataset))])
         outputs = execution_model(features.to(self.device)).detach().cpu().numpy()
