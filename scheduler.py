@@ -257,6 +257,15 @@ def main() -> None:
         # Process each pair
         for pair in all_pairs_to_process:
             current_position = position_manager.get_pair_notional(pair)
+            # Get actual available quantity for SELL orders (to avoid insufficient balance errors)
+            base, _ = pair.split('/') if '/' in pair else (pair.upper(), 'USD')
+            available_qty = position_manager.asset_qty.get(base, 0.0)
+            try:
+                current_price = position_manager.prices.get(pair) or get_last_price(pair)
+            except Exception as e:
+                logger.warning(f"[{pair}] Could not get current price: {e}, using position manager price")
+                current_price = position_manager.prices.get(pair, 0.0)
+            available_notional = available_qty * current_price if current_price > 0 else 0.0
             
             # Check if we have prediction results for this pair
             has_prediction = pair in results
@@ -343,8 +352,9 @@ def main() -> None:
                         portfolio_value=total_value,
                         position_limit_fraction=args.position_limit,
                         current_position_notional=current_position,
+                        available_notional=available_notional,
                     )
-                    logger.info(f"Hybrid policy: Prediction={pred_signal['action']} (${pred_signal['notional']:.2f}), MA={ma_signal['action']} (${ma_signal['notional']:.2f}), Combined={signal['action']} (${signal['notional']:.2f})")
+                    logger.info(f"Hybrid policy: Prediction={pred_signal['action']} (${pred_signal['notional']:.2f}), MA={ma_signal['action']} (reason: {ma_signal.get('reason', 'unknown')}), Combined={signal['action']} (${signal['notional']:.2f}, reason: {signal.get('reason', 'unknown')})")
                 else:
                     # No prediction model: MA-only logic
                     # SELL if MA downtrend (price < 16h MA) and we have position
@@ -369,10 +379,21 @@ def main() -> None:
                 logger.info(f"Policy decision: {signal}")
 
             if not args.paper:
+                # For SELL orders, ensure we don't exceed available quantity
+                sell_notional = signal["notional"]
+                if signal["action"] == "sell" and available_notional > 0:
+                    # Cap sell notional to available quantity to prevent "insufficient balance" errors
+                    sell_notional = min(signal["notional"], available_notional)
+                    if sell_notional < signal["notional"]:
+                        logger.warning(
+                            f"[{pair}] Capping sell notional from ${signal['notional']:.2f} "
+                            f"to ${sell_notional:.2f} (available qty: {available_qty:.6f})"
+                        )
+                
                 trade = execute_trade(
                     pair=pair,
                     action=signal["action"],
-                    notional=signal["notional"],
+                    notional=sell_notional if signal["action"] == "sell" else signal["notional"],
                     config=execution_config,
                 )
                 if trade.get("status") != "hold" and trade.get("price"):
@@ -442,12 +463,14 @@ def _get_ma_signal(
         
         # Simple trend filter: price above MA = uptrend, below MA = downtrend
         if current_price > current_ma:
+            logger.info(f"[{pair}] MA signal: price ${current_price:.4f} > MA ${current_ma:.4f} → UPTREND")
             return {"pair": pair, "action": "buy", "notional": 0.0, "reason": "ma_uptrend"}
         else:
+            logger.info(f"[{pair}] MA signal: price ${current_price:.4f} < MA ${current_ma:.4f} → DOWNTREND")
             return {"pair": pair, "action": "sell", "notional": 0.0, "reason": "ma_downtrend"}
         
     except Exception as e:
-        logger.warning(f"[{pair}] Error getting MA signal: {e}")
+        logger.warning(f"[{pair}] Error getting MA signal: {e}", exc_info=True)
         return {"pair": pair, "action": "hold", "notional": 0.0, "reason": f"error: {str(e)}"}
 
 
@@ -459,6 +482,7 @@ def _combine_hybrid_signals(
     portfolio_value: float,
     position_limit_fraction: float,
     current_position_notional: float,
+    **kwargs,
 ) -> Dict[str, Any]:
     """
     Combine prediction and MA signals in hybrid mode.
@@ -498,7 +522,10 @@ def _combine_hybrid_signals(
             }
 
         # Either condition met → close full position
-        sell_notional = current_position_notional
+        # Use available_notional if provided (more accurate than current_position_notional)
+        # This prevents "insufficient balance" errors due to rounding/price changes
+        available_notional = kwargs.get('available_notional', current_position_notional)
+        sell_notional = min(current_position_notional, available_notional)
         if ma_downtrend and pred_wants_sell:
             reason = "hybrid_sell_both_ma_downtrend_and_prediction"
         elif ma_downtrend:
