@@ -76,8 +76,7 @@ def parse_args() -> argparse.Namespace:
                         help="Weight for prediction model in hybrid mode (default: 0.5)")
     parser.add_argument('--hybrid_ma_weight', type=float, default=0.5,
                         help="Weight for MA strategy in hybrid mode (default: 0.5)")
-    parser.add_argument('--ma_fast', type=int, default=10, help="Fast MA period for hybrid mode")
-    parser.add_argument('--ma_slow', type=int, default=20, help="Slow MA period for hybrid mode")
+    parser.add_argument('--ma_period', type=int, default=16, help="MA period for trend filter (default: 16 hours)")
     parser.add_argument('--use_atr_stops', action='store_true',
                         help="Use ATR-based adaptive stop-loss/take-profit (default: True, enabled by default)")
     parser.add_argument('--no_atr_stops', action='store_true',
@@ -200,12 +199,7 @@ def main() -> None:
     # Hybrid mode: MA strategy settings
     hybrid_prediction_weight = args.hybrid_prediction_weight if hasattr(args, 'hybrid_prediction_weight') else 0.5
     hybrid_ma_weight = args.hybrid_ma_weight if hasattr(args, 'hybrid_ma_weight') else 0.5
-    ma_fast_period = args.ma_fast if hasattr(args, 'ma_fast') else 10
-    ma_slow_period = args.ma_slow if hasattr(args, 'ma_slow') else 20
-    
-    # Store MA state for crossover detection
-    # Initialize for all pairs we might trade, including any with open positions
-    ma_state = {pair: {'last_ma_fast': None, 'last_ma_slow': None} for pair in pairs}
+    ma_period = args.ma_period if hasattr(args, 'ma_period') else 16
     
     # Also initialize MA state for any pairs that might have open positions
     # (will be updated dynamically as we discover them)
@@ -332,21 +326,11 @@ def main() -> None:
             
             # Hybrid mode: combine with MA signal
             if use_hybrid:
-                # Initialize MA state for this pair if not already present
-                if pair not in ma_state:
-                    ma_state[pair] = {'last_ma_fast': None, 'last_ma_slow': None}
-                
                 # Get MA signal (always try, even if no prediction)
                 ma_signal = _get_ma_signal(
                     pair=pair,
-                    portfolio_value=total_value,
-                    position_limit_fraction=args.position_limit,
-                    current_position_notional=current_position,
-                    ma_fast_period=ma_fast_period,
-                    ma_slow_period=ma_slow_period,
-                    ma_state=ma_state,
+                    ma_period=ma_period,
                     db_path=db_path,
-                    ma_weight=hybrid_ma_weight,
                 )
                 
                 # Combine signals with weights
@@ -362,9 +346,24 @@ def main() -> None:
                     )
                     logger.info(f"Hybrid policy: Prediction={pred_signal['action']} (${pred_signal['notional']:.2f}), MA={ma_signal['action']} (${ma_signal['notional']:.2f}), Combined={signal['action']} (${signal['notional']:.2f})")
                 else:
-                    # No prediction model, use MA signal only
-                    signal = ma_signal
-                    logger.info(f"MA-only policy (no prediction model): {signal['action']} (${signal['notional']:.2f})")
+                    # No prediction model: MA-only logic
+                    # SELL if MA downtrend (price < 16h MA) and we have position
+                    if ma_signal['action'] == 'sell' and current_position > 0:
+                        signal = {
+                            "pair": pair,
+                            "action": "sell",
+                            "notional": current_position,
+                            "reason": "ma_only_downtrend",
+                        }
+                    else:
+                        # MA uptrend but no prediction model → can't buy without prediction
+                        signal = {
+                            "pair": pair,
+                            "action": "hold",
+                            "notional": 0.0,
+                            "reason": "ma_only_no_prediction",
+                        }
+                    logger.info(f"MA-only policy (no prediction model): MA={ma_signal['action']}, Combined={signal['action']} (${signal['notional']:.2f})")
             else:
                 signal = pred_signal
                 logger.info(f"Policy decision: {signal}")
@@ -403,16 +402,17 @@ def main() -> None:
 
 def _get_ma_signal(
     pair: str,
-    portfolio_value: float,
-    position_limit_fraction: float,
-    current_position_notional: float,
-    ma_fast_period: int,
-    ma_slow_period: int,
-    ma_state: dict,
+    ma_period: int,
     db_path: Path,
-    ma_weight: float,
 ) -> Dict[str, Any]:
-    """Get MA crossover signal for a pair."""
+    """
+    Get MA trend signal for a pair using single 16-hour MA.
+    
+    Returns:
+    - "buy" if price > MA (uptrend)
+    - "sell" if price < MA (downtrend)
+    - "hold" if insufficient data or error
+    """
     try:
         # Get price history from database
         conn = sqlite3.connect(db_path)
@@ -423,56 +423,29 @@ def _get_ma_signal(
             ORDER BY timestamp DESC 
             LIMIT ?
         """
-        min_periods = max(ma_slow_period, 26)
+        min_periods = max(ma_period, 20)
         df = pd.read_sql(query, conn, params=(pair, min_periods * 2))
         conn.close()
         
         if len(df) < min_periods:
             return {"pair": pair, "action": "hold", "notional": 0.0, "reason": "insufficient_data"}
         
-        # Calculate MAs
+        # Calculate single MA
         prices = df['close'].astype(float).iloc[::-1]  # Reverse to chronological order
-        ma_fast, ma_slow = calculate_moving_averages(prices, fast=ma_fast_period, slow=ma_slow_period)
+        ma_values = prices.rolling(window=ma_period).mean()
         
-        if len(ma_fast) == 0 or len(ma_slow) == 0:
+        if len(ma_values) == 0 or pd.isna(ma_values.iloc[-1]):
             return {"pair": pair, "action": "hold", "notional": 0.0, "reason": "ma_calc_failed"}
         
         current_price = float(prices.iloc[-1])
-        current_ma_fast = float(ma_fast.iloc[-1])
-        current_ma_slow = float(ma_slow.iloc[-1])
+        current_ma = float(ma_values.iloc[-1])
         
-        # Check for crossover
-        last_ma_fast = ma_state[pair]['last_ma_fast']
-        last_ma_slow = ma_state[pair]['last_ma_slow']
+        # Simple trend filter: price above MA = uptrend, below MA = downtrend
+        if current_price > current_ma:
+            return {"pair": pair, "action": "buy", "notional": 0.0, "reason": "ma_uptrend"}
+        else:
+            return {"pair": pair, "action": "sell", "notional": 0.0, "reason": "ma_downtrend"}
         
-        ma_signal = {"pair": pair, "action": "hold", "notional": 0.0, "reason": "no_crossover"}
-        
-        if last_ma_fast is not None and last_ma_slow is not None:
-            # Golden cross: fast MA crosses above slow MA
-            if last_ma_fast <= last_ma_slow and current_ma_fast > current_ma_slow:
-                if current_price > current_ma_fast:
-                    # Calculate notional (50% of base risk)
-                    base_notional = portfolio_value * 0.05 * hybrid_ma_weight  # 5% base risk * MA weight
-                    max_position = portfolio_value * position_limit_fraction
-                    remaining_limit = max(0.0, max_position - current_position_notional)
-                    notional = min(base_notional, remaining_limit)
-                    if notional > 0:
-                        ma_signal = {"pair": pair, "action": "buy", "notional": notional, "reason": "ma_golden_cross"}
-            
-            # Death cross: fast MA crosses below slow MA
-            elif last_ma_fast >= last_ma_slow and current_ma_fast < current_ma_slow:
-                if current_price < current_ma_fast:
-                    # Sell current position (up to MA weight portion)
-                    base_notional = portfolio_value * 0.05 * ma_weight
-                    notional = min(base_notional, current_position_notional)
-                    if notional > 0:
-                        ma_signal = {"pair": pair, "action": "sell", "notional": notional, "reason": "ma_death_cross"}
-        
-        # Update state
-        ma_state[pair]['last_ma_fast'] = current_ma_fast
-        ma_state[pair]['last_ma_slow'] = current_ma_slow
-        
-        return ma_signal
     except Exception as e:
         logger.warning(f"[{pair}] Error getting MA signal: {e}")
         return {"pair": pair, "action": "hold", "notional": 0.0, "reason": f"error: {str(e)}"}
@@ -490,24 +463,29 @@ def _combine_hybrid_signals(
     """
     Combine prediction and MA signals in hybrid mode.
 
-    Updated SELL logic (no shorts):
-    - If only ONE model (prediction OR MA) says SELL and we have a position:
-        → Sell 50% of current position.
-    - If BOTH models say SELL and we have a position:
-        → Sell 100% of current position (close position).
-    - If no position: never sell (avoid shorts).
-
-    BUY logic remains risk-based using weighted notionals.
+    NEW LOGIC:
+    
+    BUY:
+    - Price > 16h MA (uptrend) AND prediction = BUY → BUY
+    - Uses prediction model's notional (scaled by pred_weight)
+    
+    SELL:
+    - Price < 16h MA (downtrend) OR prediction = SELL → SELL 100% of position
+    - Always closes full position when either condition is met
+    - Never shorts (requires existing position)
     """
     # Determine actions
     pred_action = pred_signal.get("action", "hold")
     ma_action = ma_signal.get("action", "hold")
-
-    # --- SELL LOGIC: position-based ---
+    
+    # MA trend: "buy" means price > MA (uptrend), "sell" means price < MA (downtrend)
+    ma_uptrend = (ma_action == "buy")
+    ma_downtrend = (ma_action == "sell")
+    pred_wants_buy = (pred_action == "buy")
     pred_wants_sell = (pred_action == "sell")
-    ma_wants_sell = (ma_action == "sell")
 
-    if pred_wants_sell or ma_wants_sell:
+    # --- SELL LOGIC: Either MA downtrend OR prediction SELL → close full position ---
+    if ma_downtrend or pred_wants_sell:
         # Never go short: require existing position
         if current_position_notional <= 0:
             return {
@@ -519,14 +497,14 @@ def _combine_hybrid_signals(
                 "ma_signal": ma_signal,
             }
 
-        if pred_wants_sell and ma_wants_sell:
-            # Both models agree → close full position
-            sell_notional = current_position_notional
-            reason = "hybrid_sell_both_models"
+        # Either condition met → close full position
+        sell_notional = current_position_notional
+        if ma_downtrend and pred_wants_sell:
+            reason = "hybrid_sell_both_ma_downtrend_and_prediction"
+        elif ma_downtrend:
+            reason = "hybrid_sell_ma_downtrend"
         else:
-            # Only one model wants to sell → close 50% of position
-            sell_notional = 0.5 * current_position_notional
-            reason = "hybrid_sell_single_model"
+            reason = "hybrid_sell_prediction"
 
         return {
             "pair": pred_signal.get("pair") or ma_signal.get("pair"),
@@ -537,55 +515,33 @@ def _combine_hybrid_signals(
             "ma_signal": ma_signal,
         }
 
-    # --- BUY LOGIC: risk-budget based (unchanged except weighting) ---
-    # Scale prediction/MA notionals by weights
-    pred_notional = pred_signal.get("notional", 0.0) * pred_weight
-    ma_notional = ma_signal.get("notional", 0.0) * ma_weight
-    
-    # If both agree on BUY direction, combine
-    if pred_action == ma_action and pred_action == "buy":
-        combined_notional = pred_notional + ma_notional
+    # --- BUY LOGIC: MA uptrend AND prediction BUY → BUY ---
+    if ma_uptrend and pred_wants_buy:
+        # Both conditions met → use prediction model's notional (scaled by weight)
+        pred_notional = pred_signal.get("notional", 0.0) * pred_weight
         max_position = portfolio_value * position_limit_fraction
         remaining_limit = max(0.0, max_position - current_position_notional)
-        combined_notional = min(combined_notional, remaining_limit)
-
-        return {
-            "pair": pred_signal["pair"],
-            "action": "buy",
-            "notional": max(0.0, combined_notional),
-            "reason": "hybrid_buy_both_agree",
-            "pred_signal": pred_signal,
-            "ma_signal": ma_signal,
-        }
-    # If only one signals BUY, use that one
-    elif pred_action == "buy":
-        return {
-            "pair": pred_signal["pair"],
-            "action": "buy",
-            "notional": pred_notional,
-            "reason": "hybrid_buy_prediction_only",
-            "pred_signal": pred_signal,
-            "ma_signal": ma_signal,
-        }
-    elif ma_action == "buy":
-        return {
-            "pair": ma_signal["pair"],
-            "action": "buy",
-            "notional": ma_notional,
-            "reason": "hybrid_buy_ma_only",
-            "pred_signal": pred_signal,
-            "ma_signal": ma_signal,
-        }
-    # Both hold
-    else:
-        return {
-            "pair": pred_signal["pair"],
-            "action": "hold",
-            "notional": 0.0,
-            "reason": "hybrid_both_hold",
-            "pred_signal": pred_signal,
-            "ma_signal": ma_signal,
-        }
+        buy_notional = min(pred_notional, remaining_limit)
+        
+        if buy_notional > 0:
+            return {
+                "pair": pred_signal["pair"],
+                "action": "buy",
+                "notional": buy_notional,
+                "reason": "hybrid_buy_ma_uptrend_and_prediction",
+                "pred_signal": pred_signal,
+                "ma_signal": ma_signal,
+            }
+    
+    # --- HOLD: Conditions not met ---
+    return {
+        "pair": pred_signal.get("pair") or ma_signal.get("pair"),
+        "action": "hold",
+        "notional": 0.0,
+        "reason": "hybrid_hold_conditions_not_met",
+        "pred_signal": pred_signal,
+        "ma_signal": ma_signal,
+    }
 
 
 if __name__ == '__main__':
