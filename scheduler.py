@@ -380,20 +380,27 @@ def main() -> None:
 
             if not args.paper:
                 # For SELL orders, ensure we don't exceed available quantity
-                sell_notional = signal["notional"]
-                if signal["action"] == "sell" and available_notional > 0:
-                    # Cap sell notional to available quantity to prevent "insufficient balance" errors
-                    sell_notional = min(signal["notional"], available_notional)
+                # Use actual available quantity directly to avoid rounding/price change issues
+                if signal["action"] == "sell" and available_qty > 0:
+                    # Calculate notional from available quantity with 0.1% safety buffer
+                    # This prevents "insufficient balance" errors due to rounding or price changes
+                    safe_qty = available_qty * 0.999  # 99.9% of available to be safe
+                    safe_notional = safe_qty * current_price
+                    sell_notional = min(signal["notional"], safe_notional)
+                    
                     if sell_notional < signal["notional"]:
                         logger.warning(
                             f"[{pair}] Capping sell notional from ${signal['notional']:.2f} "
-                            f"to ${sell_notional:.2f} (available qty: {available_qty:.6f})"
+                            f"to ${sell_notional:.2f} (available qty: {available_qty:.6f}, "
+                            f"safe qty: {safe_qty:.6f}, price: ${current_price:.4f})"
                         )
+                else:
+                    sell_notional = signal["notional"]
                 
                 trade = execute_trade(
                     pair=pair,
                     action=signal["action"],
-                    notional=sell_notional if signal["action"] == "sell" else signal["notional"],
+                    notional=sell_notional,
                     config=execution_config,
                 )
                 if trade.get("status") != "hold" and trade.get("price"):
